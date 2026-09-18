@@ -6,6 +6,12 @@ Built with **React 19**, **Tailwind CSS**, **Lucide Icons**, **Node.js / Express
 
 ---
 
+## 📸 Dashboard Preview
+
+![ResStock Pro Dashboard](screenshots/DashBoard.PNG)
+
+---
+
 ## 🌟 Key Features
 
 ### 1. 🔐 Role-Based Authentication & Session Persistence
