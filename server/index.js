@@ -253,8 +253,15 @@ app.get('/api/dashboard/stats', optionalAuth, (req, res) => {
     ${baseWhere}
   `).get(...params);
 
-  // Department breakdown (always returns all 3 for department comparison cards)
-  const departments = ['Kitchen', 'Housekeeping', 'Bar'].map(dept => {
+  // Department breakdown (dynamically queries all active departments)
+  const allDeptRows = db.prepare('SELECT name, icon, color FROM departments ORDER BY id ASC').all();
+  const deptsToReport = allDeptRows.length > 0 ? allDeptRows : [
+    { name: 'Kitchen', icon: 'Utensils', color: 'text-amber-400' },
+    { name: 'Housekeeping', icon: 'Sparkles', color: 'text-teal-400' },
+    { name: 'Bar', icon: 'Wine', color: 'text-purple-400' }
+  ];
+  const departments = deptsToReport.map(deptObj => {
+    const dept = deptObj.name;
     const stats = db.prepare(`
       SELECT
         COUNT(*) as total_items,
@@ -267,6 +274,8 @@ app.get('/api/dashboard/stats', optionalAuth, (req, res) => {
     `).get(dept);
     return {
       department: dept,
+      icon: deptObj.icon,
+      color: deptObj.color,
       ...stats
     };
   });
@@ -436,9 +445,9 @@ app.post('/api/items', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Item Name, Department, and Unit are required.' });
   }
 
-  const validDepts = ['Kitchen', 'Housekeeping', 'Bar'];
+  const validDepts = db.prepare('SELECT name FROM departments').all().map(d => d.name);
   if (!validDepts.includes(department)) {
-    return res.status(400).json({ error: 'Invalid department. Must be Kitchen, Housekeeping, or Bar.' });
+    return res.status(400).json({ error: `Invalid department "${department}". Active departments are: ${validDepts.join(', ')}` });
   }
 
   // Auto-generate SKU if not provided
@@ -1316,10 +1325,11 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
 
         let department = getVal(row, ['Department', 'Dept', 'Division', 'Section']);
         // Normalize department
-        if (!department) {
+        if (!department || !department.toString().trim()) {
           department = 'Kitchen'; // default fallback
         } else {
-          const deptLower = department.toString().trim().toLowerCase();
+          const rawDept = department.toString().trim();
+          const deptLower = rawDept.toLowerCase();
           if (deptLower.includes('kitch') || deptLower.includes('food') || deptLower.includes('cook')) {
             department = 'Kitchen';
           } else if (deptLower.includes('bar') || deptLower.includes('bever') || deptLower.includes('liquor')) {
@@ -1327,7 +1337,17 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
           } else if (deptLower.includes('house') || deptLower.includes('clean') || deptLower.includes('hk') || deptLower.includes('room')) {
             department = 'Housekeeping';
           } else {
-            department = 'Kitchen';
+            // Check if matching an existing department case-insensitively
+            const matched = db.prepare('SELECT name FROM departments WHERE LOWER(name) = LOWER(?)').get(rawDept);
+            if (matched) {
+              department = matched.name;
+            } else {
+              // Proper case custom department and register
+              department = rawDept.charAt(0).toUpperCase() + rawDept.slice(1);
+              try {
+                db.prepare('INSERT OR IGNORE INTO departments (name) VALUES (?)').run(department);
+              } catch (e) {}
+            }
           }
         }
 
@@ -1614,10 +1634,14 @@ app.get('/api/excel/export', (req, res) => {
   } else if (groupBy === 'department') {
     filename = `Stock_Department_Wise_${dateStr}.xlsx`;
 
-    // Group items by department
-    const deptGroups = { Kitchen: [], Housekeeping: [], Bar: [] };
+    // Group items by department (dynamically loads registered departments)
+    const allDbDepts = db.prepare('SELECT name FROM departments ORDER BY id ASC').all().map(d => d.name);
+    const deptGroups = {};
+    (allDbDepts.length > 0 ? allDbDepts : ['Kitchen', 'Housekeeping', 'Bar']).forEach(d => {
+      deptGroups[d] = [];
+    });
     items.forEach(it => {
-      const d = it.department || 'Other';
+      const d = it.department || 'Unassigned';
       if (!deptGroups[d]) deptGroups[d] = [];
       deptGroups[d].push(it);
     });
@@ -1707,6 +1731,168 @@ app.get('/api/excel/template', (req, res) => {
     return res.download(templatePath, 'sample_inventory_template.xlsx');
   }
   res.status(404).json({ error: 'Template file not found.' });
+});
+
+// ==========================================
+// DEPARTMENTS API (Add, Remove, List)
+// ==========================================
+
+// Get all active departments with live stats
+app.get('/api/departments', (req, res) => {
+  try {
+    const depts = db.prepare('SELECT id, name, icon, color, description, created_at FROM departments ORDER BY id ASC').all();
+
+    // Enrich with item counts and health statistics
+    const enriched = depts.map(d => {
+      const stats = db.prepare(`
+        SELECT
+          COUNT(*) as total_items,
+          SUM(CASE WHEN current_stock = 0 THEN 1 ELSE 0 END) as out_of_stock,
+          SUM(CASE WHEN current_stock > 0 AND current_stock <= min_threshold THEN 1 ELSE 0 END) as low_stock,
+          SUM(CASE WHEN current_stock > min_threshold THEN 1 ELSE 0 END) as in_stock,
+          COALESCE(SUM(current_stock * cost_per_unit), 0) as total_valuation
+        FROM items
+        WHERE department = ?
+      `).get(d.name);
+
+      return {
+        ...d,
+        ...stats
+      };
+    });
+
+    res.json(enriched);
+  } catch (err) {
+    console.error('Error fetching departments:', err);
+    res.status(500).json({ error: 'Failed to fetch departments: ' + err.message });
+  }
+});
+
+// Add a new department (Admin only)
+app.post('/api/departments', authenticateToken, (req, res) => {
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: 'Only Administrators can create new departments.' });
+  }
+
+  const { name, icon, color, description } = req.body;
+  const trimmedName = name && name.trim();
+
+  if (!trimmedName || trimmedName.length < 2 || trimmedName.length > 35) {
+    return res.status(400).json({ error: 'Department name is required and must be between 2 and 35 characters.' });
+  }
+
+  if (trimmedName.toLowerCase() === 'all') {
+    return res.status(400).json({ error: '"All" is a reserved keyword and cannot be used as a department name.' });
+  }
+
+  // Check unique
+  const existing = db.prepare('SELECT id FROM departments WHERE LOWER(name) = LOWER(?)').get(trimmedName);
+  if (existing) {
+    return res.status(400).json({ error: `A department named "${trimmedName}" already exists.` });
+  }
+
+  try {
+    const defaultColor = color || 'text-indigo-400';
+    const defaultIcon = icon || 'Layers';
+    const desc = description ? description.trim() : '';
+
+    const result = db.prepare(`
+      INSERT INTO departments (name, icon, color, description)
+      VALUES (?, ?, ?, ?)
+    `).run(trimmedName, defaultIcon, defaultColor, desc);
+
+    // Audit log
+    db.prepare(`
+      INSERT INTO transactions (item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
+      VALUES (?, ?, ?, 'ADJUSTMENT', 0, 0, 0, ?, 'System Configuration', ?)
+    `).run(
+      `Department Created: ${trimmedName}`,
+      'DEPT-SYS',
+      trimmedName,
+      req.user.name || req.user.username,
+      `Administrator added department "${trimmedName}"`
+    );
+
+    const created = db.prepare('SELECT * FROM departments WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json({
+      message: `Department "${trimmedName}" created successfully.`,
+      department: {
+        ...created,
+        total_items: 0,
+        out_of_stock: 0,
+        low_stock: 0,
+        in_stock: 0,
+        total_valuation: 0
+      }
+    });
+  } catch (err) {
+    console.error('Error creating department:', err);
+    res.status(500).json({ error: 'Failed to create department: ' + err.message });
+  }
+});
+
+// Remove a department (Admin only)
+app.delete('/api/departments/:name', authenticateToken, (req, res) => {
+  if (req.user.role !== 'Admin') {
+    return res.status(403).json({ error: 'Only Administrators can remove departments.' });
+  }
+
+  const deptName = req.params.name;
+  if (!deptName || deptName.toLowerCase() === 'all') {
+    return res.status(400).json({ error: 'Cannot remove this department.' });
+  }
+
+  const dept = db.prepare('SELECT * FROM departments WHERE LOWER(name) = LOWER(?)').get(deptName);
+  if (!dept) {
+    return res.status(404).json({ error: `Department "${deptName}" was not found.` });
+  }
+
+  // Prevent removing if only 1 department remains
+  const totalDepts = db.prepare('SELECT COUNT(*) as c FROM departments').get().c;
+  if (totalDepts <= 1) {
+    return res.status(400).json({ error: 'Cannot remove the last remaining department. At least one department is required.' });
+  }
+
+  // Prevent removing if items are assigned to this department
+  const itemCount = db.prepare('SELECT COUNT(*) as c FROM items WHERE department = ?').get(dept.name).c;
+  if (itemCount > 0) {
+    return res.status(400).json({
+      error: `Cannot remove "${dept.name}" because it currently has ${itemCount} active item${itemCount > 1 ? 's' : ''}. Please reassign or delete these items first.`
+    });
+  }
+
+  // Prevent removing if pending orders exist
+  const pendingOrders = db.prepare("SELECT COUNT(*) as c FROM orders WHERE department = ? AND status = 'PENDING'").get(dept.name).c;
+  if (pendingOrders > 0) {
+    return res.status(400).json({
+      error: `Cannot remove "${dept.name}" because it has ${pendingOrders} pending purchase order${pendingOrders > 1 ? 's' : ''}.`
+    });
+  }
+
+  try {
+    db.prepare('DELETE FROM departments WHERE id = ?').run(dept.id);
+
+    // Audit log
+    db.prepare(`
+      INSERT INTO transactions (item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
+      VALUES (?, ?, ?, 'ADJUSTMENT', 0, 0, 0, ?, 'System Configuration', ?)
+    `).run(
+      `Department Removed: ${dept.name}`,
+      'DEPT-SYS',
+      dept.name,
+      req.user.name || req.user.username,
+      `Administrator removed department "${dept.name}"`
+    );
+
+    res.json({
+      success: true,
+      message: `Department "${dept.name}" removed successfully.`,
+      department: dept
+    });
+  } catch (err) {
+    console.error('Error deleting department:', err);
+    res.status(500).json({ error: 'Failed to delete department: ' + err.message });
+  }
 });
 
 // Categories list helper for filters and dropdowns

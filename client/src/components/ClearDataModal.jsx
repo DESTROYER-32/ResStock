@@ -6,10 +6,11 @@ export default function ClearDataModal({
   isOpen,
   onClose,
   selectedDepartment,
+  departmentsList = [],
   onDataChanged,
   showToast
 }) {
-  const [scope, setScope] = useState('All'); // 'All', 'Kitchen', 'Housekeeping', 'Bar'
+  const [scope, setScope] = useState('All');
   const [confirming, setConfirming] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -89,9 +90,14 @@ export default function ClearDataModal({
             <div className="grid grid-cols-2 gap-2 text-xs font-semibold">
               {[
                 { id: 'All', label: 'All Departments (Everything)' },
-                { id: 'Kitchen', label: 'Kitchen Only' },
-                { id: 'Housekeeping', label: 'Housekeeping Only' },
-                { id: 'Bar', label: 'Bar Only' }
+                ...(departmentsList.length > 0
+                  ? departmentsList.map(d => ({ id: d.name, label: `${d.name} Only` }))
+                  : [
+                      { id: 'Kitchen', label: 'Kitchen Only' },
+                      { id: 'Housekeeping', label: 'Housekeeping Only' },
+                      { id: 'Bar', label: 'Bar Only' }
+                    ]
+                )
               ].map(opt => (
                 <button
                   key={opt.id}

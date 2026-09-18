@@ -15,9 +15,27 @@ import {
   ChevronRight,
   X,
   Settings,
-  ShoppingBag
+  ShoppingBag,
+  Beer,
+  Coffee,
+  Pizza,
+  Package
 } from 'lucide-react';
 import { useCurrency } from '../context/CurrencyContext';
+
+const DEPT_ICON_MAP = {
+  Utensils,
+  Wine,
+  Sparkles,
+  Beer,
+  Coffee,
+  Pizza,
+  ShoppingBag,
+  Boxes,
+  Package,
+  Store,
+  Layers
+};
 
 export default function Sidebar({
   currentView,
@@ -29,15 +47,25 @@ export default function Sidebar({
   onLogout,
   onOpenAdminSettings,
   mobileOpen,
-  setMobileOpen
+  setMobileOpen,
+  departmentsList = []
 }) {
   const { formatAmount } = useCurrency();
 
   const departments = [
     { id: 'All', name: 'All Departments', icon: Layers, color: 'text-indigo-400' },
-    { id: 'Kitchen', name: 'Kitchen', icon: Utensils, color: 'text-amber-400' },
-    { id: 'Housekeeping', name: 'Housekeeping', icon: Sparkles, color: 'text-teal-400' },
-    { id: 'Bar', name: 'Bar', icon: Wine, color: 'text-purple-400' }
+    ...(departmentsList.length > 0
+      ? departmentsList.map(d => ({
+          id: d.name,
+          name: d.name,
+          icon: DEPT_ICON_MAP[d.icon] || Layers,
+          color: d.color || 'text-indigo-400'
+        }))
+      : [
+          { id: 'Kitchen', name: 'Kitchen', icon: Utensils, color: 'text-amber-400' },
+          { id: 'Housekeeping', name: 'Housekeeping', icon: Sparkles, color: 'text-teal-400' },
+          { id: 'Bar', name: 'Bar', icon: Wine, color: 'text-purple-400' }
+        ])
   ];
 
   const navItems = [
@@ -127,7 +155,18 @@ export default function Sidebar({
           <div>
             <div className="px-3 mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400">
               <span>Department Focus</span>
-              <span className="text-[10px] text-slate-400 font-normal">Switch View</span>
+              {currentUser?.role === 'Admin' ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenAdminSettings && onOpenAdminSettings('departments')}
+                  title="Add or Remove Departments"
+                  className="text-[10px] text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-0.5 transition hover:underline cursor-pointer"
+                >
+                  <span>+ Edit</span>
+                </button>
+              ) : (
+                <span className="text-[10px] text-slate-400 font-normal">Switch View</span>
+              )}
             </div>
             <div className="space-y-1">
               {departments.map((dept) => {

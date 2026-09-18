@@ -16,10 +16,13 @@ export default function BulkEditModal({
   isOpen,
   onClose,
   selectedItems,
+  departmentsList = [],
   onSubmit,
   loading
 }) {
   const { currency } = useCurrency();
+  const deptOptions = departmentsList.length > 0 ? departmentsList.map(d => d.name) : ['Kitchen', 'Housekeeping', 'Bar'];
+
   // Enabled flags for each field
   const [fields, setFields] = useState({
     department: false,
@@ -33,7 +36,7 @@ export default function BulkEditModal({
   });
 
   // Values
-  const [department, setDepartment] = useState('Kitchen');
+  const [department, setDepartment] = useState(deptOptions[0] || 'Kitchen');
   const [category, setCategory] = useState('');
   const [unit, setUnit] = useState('kg');
   const [minThreshold, setMinThreshold] = useState('10');
@@ -142,8 +145,8 @@ export default function BulkEditModal({
                 <span className="text-[11px] text-slate-400 font-medium">Assign new department</span>
               </div>
               {fields.department && (
-                <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-slate-200">
-                  {['Kitchen', 'Housekeeping', 'Bar'].map((dept) => (
+                <div className="flex flex-wrap gap-2 mt-2 pt-2 border-t border-slate-200">
+                  {deptOptions.map((dept) => (
                     <button
                       key={dept}
                       type="button"

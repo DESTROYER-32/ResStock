@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   Trash2,
@@ -9,20 +9,88 @@ import {
   Lock,
   Layers,
   Sparkles,
-  Coins
+  Coins,
+  Plus,
+  Utensils,
+  Wine,
+  Beer,
+  Coffee,
+  Pizza,
+  ShoppingBag,
+  Boxes,
+  Package,
+  Store,
+  FolderPlus
 } from 'lucide-react';
 import { api } from '../api';
 import { useCurrency, CurrencyIcon, AVAILABLE_CURRENCIES } from '../context/CurrencyContext';
+
+export const DEPT_ICON_COMPONENTS = {
+  Utensils,
+  Wine,
+  Beer,
+  Coffee,
+  Pizza,
+  Sparkles,
+  ShoppingBag,
+  Boxes,
+  Package,
+  Store,
+  Layers
+};
+
+export const AVAILABLE_DEPT_ICONS = [
+  { name: 'Utensils', icon: Utensils, label: 'Kitchen / Food' },
+  { name: 'Wine', icon: Wine, label: 'Bar / Wine' },
+  { name: 'Beer', icon: Beer, label: 'Brewery / Taps' },
+  { name: 'Coffee', icon: Coffee, label: 'Cafe / Coffee' },
+  { name: 'Pizza', icon: Pizza, label: 'Pizzeria / Fast Food' },
+  { name: 'Sparkles', icon: Sparkles, label: 'Housekeeping' },
+  { name: 'ShoppingBag', icon: ShoppingBag, label: 'Merch / Retail' },
+  { name: 'Boxes', icon: Boxes, label: 'Dry Storage' },
+  { name: 'Package', icon: Package, label: 'Pantry / Supplies' },
+  { name: 'Store', icon: Store, label: 'Front of House' },
+  { name: 'Layers', icon: Layers, label: 'General' }
+];
+
+export const AVAILABLE_DEPT_COLORS = [
+  { class: 'text-amber-400', label: 'Amber', preview: 'bg-amber-400' },
+  { class: 'text-teal-400', label: 'Teal', preview: 'bg-teal-400' },
+  { class: 'text-purple-400', label: 'Purple', preview: 'bg-purple-400' },
+  { class: 'text-emerald-400', label: 'Emerald', preview: 'bg-emerald-400' },
+  { class: 'text-rose-400', label: 'Rose', preview: 'bg-rose-400' },
+  { class: 'text-indigo-400', label: 'Indigo', preview: 'bg-indigo-400' },
+  { class: 'text-blue-400', label: 'Blue', preview: 'bg-blue-400' },
+  { class: 'text-orange-400', label: 'Orange', preview: 'bg-orange-400' },
+  { class: 'text-cyan-400', label: 'Cyan', preview: 'bg-cyan-400' }
+];
 
 export default function AdminSettingsModal({
   isOpen,
   onClose,
   onDataCleared,
-  showToast
+  showToast,
+  departmentsList = [],
+  onDepartmentsUpdated,
+  initialTab = 'departments'
 }) {
-  const [activeTab, setActiveTab] = useState('clean'); // 'clean', 'user', or 'currency'
+  const [activeTab, setActiveTab] = useState(initialTab || 'departments');
   const { currency, setCurrency, formatAmount, currencies } = useCurrency();
   const [customCurrency, setCustomCurrency] = useState('');
+
+  // Synchronize initialTab when opened
+  useEffect(() => {
+    if (isOpen && initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
+
+  // Departments state
+  const [newDeptName, setNewDeptName] = useState('');
+  const [newDeptIcon, setNewDeptIcon] = useState('Utensils');
+  const [newDeptColor, setNewDeptColor] = useState('text-amber-400');
+  const [newDeptDesc, setNewDeptDesc] = useState('');
+  const [deptActionLoading, setDeptActionLoading] = useState(false);
 
   // User form state
   const [username, setUsername] = useState('');
@@ -84,18 +152,66 @@ export default function AdminSettingsModal({
     }
   };
 
+  const handleAddDepartment = async (e) => {
+    e.preventDefault();
+    if (!newDeptName.trim()) {
+      showToast({ type: 'error', message: 'Department name is required.' });
+      return;
+    }
+    setDeptActionLoading(true);
+    try {
+      const res = await api.createDepartment({
+        name: newDeptName.trim(),
+        icon: newDeptIcon,
+        color: newDeptColor,
+        description: newDeptDesc.trim()
+      });
+      showToast({ type: 'success', message: res.message });
+      setNewDeptName('');
+      setNewDeptDesc('');
+      if (onDepartmentsUpdated) onDepartmentsUpdated();
+    } catch (err) {
+      showToast({ type: 'error', message: err.message || 'Failed to add department.' });
+    } finally {
+      setDeptActionLoading(false);
+    }
+  };
+
+  const handleRemoveDepartment = async (dept) => {
+    if (dept.total_items > 0) {
+      showToast({
+        type: 'error',
+        message: `Cannot remove "${dept.name}": contains ${dept.total_items} items. Please delete or reassign them first.`
+      });
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to remove the department "${dept.name}"?`)) {
+      return;
+    }
+    setDeptActionLoading(true);
+    try {
+      const res = await api.deleteDepartment(dept.name);
+      showToast({ type: 'success', message: res.message });
+      if (onDepartmentsUpdated) onDepartmentsUpdated();
+    } catch (err) {
+      showToast({ type: 'error', message: err.message || 'Failed to remove department.' });
+    } finally {
+      setDeptActionLoading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in">
-      <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+      <div className="bg-white w-full max-w-2xl max-h-[92vh] rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="p-5 bg-slate-900 text-white flex items-center justify-between">
+        <div className="p-5 bg-slate-900 text-white flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center font-bold">
               <Settings className="w-5 h-5" />
             </div>
             <div>
               <h3 className="font-bold text-base">System Settings & Administration</h3>
-              <p className="text-xs text-slate-400">Manage user accounts and database maintenance</p>
+              <p className="text-xs text-slate-400">Manage store departments, accounts, and system configuration</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition">
@@ -104,13 +220,26 @@ export default function AdminSettingsModal({
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex border-b border-slate-200 bg-slate-50 text-xs font-semibold">
+        <div className="flex border-b border-slate-200 bg-slate-50 text-xs font-semibold overflow-x-auto shrink-0">
+          <button
+            type="button"
+            onClick={() => setActiveTab('departments')}
+            className={`flex-1 min-w-[120px] py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
+              activeTab === 'departments'
+                ? 'border-indigo-600 text-indigo-900 bg-white font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Layers className="w-4 h-4 text-indigo-500" />
+            <span>Departments ({departmentsList.length})</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveTab('clean')}
-            className={`flex-1 py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
+            className={`flex-1 min-w-[100px] py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
               activeTab === 'clean'
-                ? 'border-amber-500 text-amber-800 bg-white'
+                ? 'border-rose-600 text-rose-900 bg-white font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -121,9 +250,9 @@ export default function AdminSettingsModal({
           <button
             type="button"
             onClick={() => setActiveTab('user')}
-            className={`flex-1 py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
+            className={`flex-1 min-w-[100px] py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
               activeTab === 'user'
-                ? 'border-amber-500 text-amber-800 bg-white'
+                ? 'border-emerald-600 text-emerald-900 bg-white font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -134,9 +263,9 @@ export default function AdminSettingsModal({
           <button
             type="button"
             onClick={() => setActiveTab('currency')}
-            className={`flex-1 py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
+            className={`flex-1 min-w-[100px] py-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 ${
               activeTab === 'currency'
-                ? 'border-amber-500 text-amber-800 bg-white'
+                ? 'border-amber-500 text-amber-900 bg-white font-bold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -146,7 +275,190 @@ export default function AdminSettingsModal({
         </div>
 
         {/* Body */}
-        <div className="p-6">
+        <div className="p-6 overflow-y-auto flex-1">
+          {/* TAB 1: DEPARTMENTS MANAGEMENT */}
+          {activeTab === 'departments' && (
+            <div className="space-y-5 text-xs">
+              <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-950 space-y-1">
+                <div className="flex items-center gap-2 font-bold text-sm text-indigo-900">
+                  <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <span>Store Departments Management</span>
+                </div>
+                <p className="text-[11px] text-indigo-800 leading-relaxed">
+                  Configure the operational sections of your restaurant or venue (e.g. Kitchen, Bar, Housekeeping, Bakery, Patio). Added departments instantly update your navigation, stock filters, order slips, and Excel exports.
+                </p>
+              </div>
+
+              {/* Active Departments List */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="block font-bold text-slate-700 uppercase tracking-wider text-[11px]">
+                    Active Departments ({departmentsList.length})
+                  </label>
+                  <span className="text-[10px] text-slate-400">
+                    Departments with 0 items can be safely removed
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {departmentsList.map(dept => {
+                    const IconComp = DEPT_ICON_COMPONENTS[dept.icon] || Layers;
+                    const canDelete = dept.total_items === 0 && departmentsList.length > 1;
+
+                    return (
+                      <div
+                        key={dept.name}
+                        className="p-3.5 bg-slate-50 border border-slate-200/90 rounded-2xl flex items-center justify-between gap-3 shadow-xs hover:bg-white transition"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`w-9 h-9 rounded-xl bg-slate-900 flex items-center justify-center shrink-0 shadow-xs ${dept.color || 'text-indigo-400'}`}>
+                            <IconComp className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-slate-900 text-xs truncate flex items-center gap-1.5">
+                              <span>{dept.name}</span>
+                              {dept.total_items > 0 && (
+                                <span className="text-[10px] font-semibold px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded-full">
+                                  {dept.total_items} items
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-slate-500 truncate mt-0.5">
+                              {dept.description || `${dept.total_items || 0} items tracked • ${formatAmount(dept.total_valuation || 0)}`}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          {canDelete ? (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveDepartment(dept)}
+                              disabled={deptActionLoading}
+                              title={`Remove "${dept.name}" department`}
+                              className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-100/60 rounded-lg transition disabled:opacity-50"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <span
+                              title={dept.total_items > 0 ? `Cannot remove: contains ${dept.total_items} items` : 'At least one department is required'}
+                              className="text-[10px] px-2 py-1 bg-slate-100 text-slate-400 rounded-lg cursor-not-allowed select-none border border-slate-200 font-medium"
+                            >
+                              {dept.total_items > 0 ? `${dept.total_items} SKUs` : 'Protected'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Add New Department Form Card */}
+              <form onSubmit={handleAddDepartment} className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3.5 shadow-xs">
+                <div className="flex items-center gap-2 font-bold text-slate-900 text-xs border-b border-slate-100 pb-2">
+                  <FolderPlus className="w-4 h-4 text-emerald-600" />
+                  <span>Add New Department</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 uppercase tracking-wider text-[10px] mb-1">
+                      Department Name *
+                    </label>
+                    <input
+                      type="text"
+                      value={newDeptName}
+                      onChange={(e) => setNewDeptName(e.target.value)}
+                      placeholder="e.g. Bakery, Patio, Cafe, Wine Cellar"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-slate-700 uppercase tracking-wider text-[10px] mb-1">
+                      Brief Description (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={newDeptDesc}
+                      onChange={(e) => setNewDeptDesc(e.target.value)}
+                      placeholder="e.g. Pastries, bread, flour, oven inventory"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Icon Picker */}
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase tracking-wider text-[10px] mb-1.5">
+                    Select Department Icon:
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {AVAILABLE_DEPT_ICONS.map(ic => {
+                      const Icon = ic.icon;
+                      const isSelected = newDeptIcon === ic.name;
+                      return (
+                        <button
+                          key={ic.name}
+                          type="button"
+                          onClick={() => setNewDeptIcon(ic.name)}
+                          title={ic.label}
+                          className={`p-2 rounded-xl border flex items-center gap-1.5 text-xs transition ${
+                            isSelected
+                              ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                              : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                          <span className="text-[11px] font-medium hidden sm:inline">{ic.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Color Theme Picker */}
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase tracking-wider text-[10px] mb-1.5">
+                    Select Color Accent:
+                  </label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {AVAILABLE_DEPT_COLORS.map(col => {
+                      const isSelected = newDeptColor === col.class;
+                      return (
+                        <button
+                          key={col.label}
+                          type="button"
+                          onClick={() => setNewDeptColor(col.class)}
+                          title={col.label}
+                          className={`w-7 h-7 rounded-full flex items-center justify-center transition border ${col.preview} ${
+                            isSelected ? 'ring-2 ring-slate-900 ring-offset-2 scale-110' : 'opacity-80 hover:opacity-100'
+                          }`}
+                        >
+                          {isSelected && <div className="w-2 h-2 rounded-full bg-slate-950" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={deptActionLoading || !newDeptName.trim()}
+                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition disabled:opacity-50 cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>{deptActionLoading ? 'Adding...' : 'Add Department'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
           {activeTab === 'clean' && (
             <form onSubmit={handleClearDataSubmit} className="space-y-4 text-xs">
               <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 space-y-2">
@@ -168,9 +480,13 @@ export default function AdminSettingsModal({
                 <div className="grid grid-cols-2 gap-2">
                   {[
                     { id: 'All', label: 'Entire Database (All)' },
-                    { id: 'Kitchen', label: 'Kitchen Only' },
-                    { id: 'Housekeeping', label: 'Housekeeping Only' },
-                    { id: 'Bar', label: 'Bar Only' }
+                    ...(departmentsList.length > 0
+                      ? departmentsList.map(d => ({ id: d.name, label: `${d.name} Only` }))
+                      : [
+                          { id: 'Kitchen', label: 'Kitchen Only' },
+                          { id: 'Housekeeping', label: 'Housekeeping Only' },
+                          { id: 'Bar', label: 'Bar Only' }
+                        ])
                   ].map(sc => (
                     <button
                       key={sc.id}
@@ -307,10 +623,10 @@ export default function AdminSettingsModal({
                     onChange={(e) => setDepartment(e.target.value)}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   >
-                    <option value="Kitchen">Kitchen</option>
-                    <option value="Housekeeping">Housekeeping</option>
-                    <option value="Bar">Bar</option>
                     <option value="All">All Departments</option>
+                    {(departmentsList.length > 0 ? departmentsList.map(d => d.name) : ['Kitchen', 'Housekeeping', 'Bar']).map(dName => (
+                      <option key={dName} value={dName}>{dName}</option>
+                    ))}
                   </select>
                 </div>
               </div>

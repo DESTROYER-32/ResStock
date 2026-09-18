@@ -17,6 +17,7 @@ export default function TransactionsView({
   transactions,
   selectedDepartment,
   setSelectedDepartment,
+  departmentsList = [],
   onRefresh,
   loading
 }) {
@@ -63,7 +64,7 @@ export default function TransactionsView({
     XLSX.writeFile(wb, `Stock_Transactions_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const departments = ['All', 'Kitchen', 'Housekeeping', 'Bar'];
+  const departments = ['All', ...(departmentsList.length > 0 ? departmentsList.map(d => d.name) : ['Kitchen', 'Housekeeping', 'Bar'])];
 
   return (
     <div className="space-y-4">

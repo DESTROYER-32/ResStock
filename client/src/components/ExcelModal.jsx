@@ -23,6 +23,7 @@ export default function ExcelModal({
   onClose,
   onImportComplete,
   selectedDepartment = 'All',
+  departmentsList = [],
   items = [],
   initialTab = 'import',
   showToast
@@ -521,9 +522,11 @@ export default function ExcelModal({
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500"
                     >
                       <option value="All">All Departments</option>
-                      <option value="Kitchen">Kitchen</option>
-                      <option value="Housekeeping">Housekeeping</option>
-                      <option value="Bar">Bar</option>
+                      {(departmentsList.length > 0 ? departmentsList : [{ name: 'Kitchen' }, { name: 'Housekeeping' }, { name: 'Bar' }]).map((d) => (
+                        <option key={d.name} value={d.name}>
+                          {d.name}
+                        </option>
+                      ))}
                     </select>
                   </div>
 

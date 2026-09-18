@@ -21,6 +21,7 @@ export default function OrdersView({
   orders = [],
   selectedDepartment,
   setSelectedDepartment,
+  departmentsList = [],
   onOpenCreateOrder,
   onOpenReceiveOrder,
   onDeleteOrder,
@@ -88,7 +89,7 @@ export default function OrdersView({
     };
   }, [orders, selectedDepartment]);
 
-  const departments = ['All', 'Kitchen', 'Housekeeping', 'Bar'];
+  const departments = ['All', ...(departmentsList.length > 0 ? departmentsList.map(d => d.name) : ['Kitchen', 'Housekeeping', 'Bar'])];
 
   const toggleExpand = (id) => {
     setExpandedOrderId(prev => prev === id ? null : id);

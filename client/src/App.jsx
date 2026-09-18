@@ -37,6 +37,7 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [departmentsList, setDepartmentsList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -81,16 +82,23 @@ export default function App() {
     if (!currentUser) return;
     setLoading(true);
     try {
-      const [statsData, itemsData, txData, ordersData] = await Promise.all([
+      const [statsData, itemsData, txData, ordersData, deptsData] = await Promise.all([
         api.getDashboardStats(selectedDepartment),
         api.getItems({ department: selectedDepartment }),
         api.getTransactions({ department: selectedDepartment, limit: 100 }),
-        api.getOrders({ department: selectedDepartment })
+        api.getOrders({ department: selectedDepartment }),
+        api.getDepartments()
       ]);
       setStats(statsData);
       setItems(itemsData);
       setTransactions(txData);
       setOrders(ordersData);
+      if (deptsData) {
+        setDepartmentsList(deptsData);
+        if (selectedDepartment !== 'All' && !deptsData.some(d => d.name === selectedDepartment)) {
+          setSelectedDepartment('All');
+        }
+      }
     } catch (err) {
       console.error('Failed to load inventory data:', err);
       showToast({ type: 'error', message: 'Failed to load inventory data: ' + err.message });
@@ -301,6 +309,7 @@ export default function App() {
         setCurrentView={setCurrentView}
         selectedDepartment={selectedDepartment}
         setSelectedDepartment={setSelectedDepartment}
+        departmentsList={departmentsList}
         stats={stats}
         currentUser={currentUser}
         onLogout={handleLogout}
@@ -333,6 +342,7 @@ export default function App() {
               stats={stats}
               selectedDepartment={selectedDepartment}
               setSelectedDepartment={setSelectedDepartment}
+              departmentsList={departmentsList}
               setCurrentView={setCurrentView}
               onOpenStockIn={() => setStockModal({ isOpen: true, type: 'IN', item: null })}
               onOpenStockOut={() => setStockModal({ isOpen: true, type: 'OUT', item: null })}
@@ -346,6 +356,7 @@ export default function App() {
               items={items}
               selectedDepartment={selectedDepartment}
               setSelectedDepartment={setSelectedDepartment}
+              departmentsList={departmentsList}
               onOpenAddItem={() => setItemModal({ isOpen: true, itemToEdit: null })}
               onOpenEditItem={(item) => setItemModal({ isOpen: true, itemToEdit: item })}
               onDeleteItem={(item) => setDeleteModal({ isOpen: true, item, items: null })}
@@ -376,6 +387,7 @@ export default function App() {
               items={items}
               selectedDepartment={selectedDepartment}
               setSelectedDepartment={setSelectedDepartment}
+              departmentsList={departmentsList}
               onStockInItem={(item) => setStockModal({ isOpen: true, type: 'IN', item })}
             />
           )}
@@ -385,6 +397,7 @@ export default function App() {
               orders={orders}
               selectedDepartment={selectedDepartment}
               setSelectedDepartment={setSelectedDepartment}
+              departmentsList={departmentsList}
               onOpenCreateOrder={() => setGenerateOrderModal({ isOpen: true, items: [] })}
               onOpenReceiveOrder={(order) => setReceiveOrderModal({ isOpen: true, order })}
               onDeleteOrder={handleDeleteOrder}
@@ -399,6 +412,7 @@ export default function App() {
               transactions={transactions}
               selectedDepartment={selectedDepartment}
               setSelectedDepartment={setSelectedDepartment}
+              departmentsList={departmentsList}
               onRefresh={fetchData}
               loading={loading}
             />
@@ -434,6 +448,7 @@ export default function App() {
         onClose={() => setItemModal({ isOpen: false, itemToEdit: null })}
         itemToEdit={itemModal.itemToEdit}
         defaultDepartment={selectedDepartment}
+        departmentsList={departmentsList}
         onSubmit={handleItemSubmit}
         loading={actionLoading}
       />
@@ -442,6 +457,7 @@ export default function App() {
         isOpen={bulkEditModal.isOpen}
         onClose={() => setBulkEditModal({ isOpen: false, items: [] })}
         selectedItems={bulkEditModal.items}
+        departmentsList={departmentsList}
         onSubmit={handleBulkEditSubmit}
         loading={actionLoading}
       />
@@ -478,6 +494,7 @@ export default function App() {
         initialTab={excelModalTab}
         onClose={() => setExcelModalOpen(false)}
         selectedDepartment={selectedDepartment}
+        departmentsList={departmentsList}
         items={items}
         onImportComplete={() => {
           fetchData();
@@ -489,6 +506,8 @@ export default function App() {
       <AdminSettingsModal
         isOpen={adminSettingsOpen}
         onClose={() => setAdminSettingsOpen(false)}
+        departmentsList={departmentsList}
+        onDepartmentsUpdated={fetchData}
         onDataCleared={fetchData}
         showToast={showToast}
       />

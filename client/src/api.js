@@ -332,6 +332,39 @@ export const api = {
     return `${BASE_URL}/excel/template`;
   },
 
+  // Departments Management
+  async getDepartments() {
+    const res = await fetch(`${BASE_URL}/departments`, {
+      headers: { ...getAuthHeader() }
+    });
+    if (!res.ok) throw new Error('Failed to fetch departments');
+    return res.json();
+  },
+
+  async createDepartment(deptData) {
+    const res = await fetch(`${BASE_URL}/departments`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeader()
+      },
+      body: JSON.stringify(deptData)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to create department');
+    return data;
+  },
+
+  async deleteDepartment(deptName) {
+    const res = await fetch(`${BASE_URL}/departments/${encodeURIComponent(deptName)}`, {
+      method: 'DELETE',
+      headers: { ...getAuthHeader() }
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to delete department');
+    return data;
+  },
+
   async getCategories(department = 'All') {
     const query = department && department !== 'All' ? `?department=${encodeURIComponent(department)}` : '';
     const res = await fetch(`${BASE_URL}/categories${query}`, {

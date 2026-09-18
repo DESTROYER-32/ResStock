@@ -16,11 +16,14 @@ export default function AlertsView({
   items,
   selectedDepartment,
   setSelectedDepartment,
+  departmentsList = [],
   onStockInItem
 }) {
   const { currency, formatAmount } = useCurrency();
   const [filterDept, setFilterDept] = useState(selectedDepartment || 'All');
   const [severityFilter, setSeverityFilter] = useState('All'); // 'All', 'zero', 'low'
+
+  const departments = ['All', ...(departmentsList.length > 0 ? departmentsList.map(d => d.name) : ['Kitchen', 'Housekeeping', 'Bar'])];
 
   // Filter items needing reorder (stock <= min_threshold)
   const alertItems = items.filter((item) => {
@@ -92,15 +95,15 @@ export default function AlertsView({
       <div className="p-4 bg-white rounded-2xl border border-slate-200/80 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Filter Alerts:</span>
-          <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
-            {['All', 'Kitchen', 'Housekeeping', 'Bar'].map((dept) => (
+          <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl overflow-x-auto">
+            {departments.map((dept) => (
               <button
                 key={dept}
                 onClick={() => {
                   setFilterDept(dept);
                   setSelectedDepartment(dept);
                 }}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${
+                className={`px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition ${
                   filterDept === dept ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                 }`}
               >

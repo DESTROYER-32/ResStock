@@ -1,4 +1,3 @@
-import React from 'react';
 import {
   Boxes,
   AlertTriangle,
@@ -13,14 +12,36 @@ import {
   PackagePlus,
   PlusCircle,
   Clock,
-  ShieldAlert
+  ShieldAlert,
+  Beer,
+  Coffee,
+  Pizza,
+  ShoppingBag,
+  Store,
+  Layers,
+  Package
 } from 'lucide-react';
 import { useCurrency, CurrencyIcon } from '../context/CurrencyContext';
+
+const DEPT_ICON_MAP = {
+  Utensils,
+  Wine,
+  Sparkles,
+  Beer,
+  Coffee,
+  Pizza,
+  ShoppingBag,
+  Boxes,
+  Package,
+  Store,
+  Layers
+};
 
 export default function DashboardView({
   stats,
   selectedDepartment,
   setSelectedDepartment,
+  departmentsList = [],
   setCurrentView,
   onOpenStockIn,
   onOpenStockOut,
@@ -31,18 +52,6 @@ export default function DashboardView({
   const overall = stats?.overall || {};
   const departments = stats?.departments || [];
   const criticalItems = stats?.criticalItems || [];
-
-  const deptIcons = {
-    Kitchen: Utensils,
-    Housekeeping: Sparkles,
-    Bar: Wine
-  };
-
-  const deptColors = {
-    Kitchen: 'border-amber-200 bg-amber-50/40 text-amber-900',
-    Housekeeping: 'border-teal-200 bg-teal-50/40 text-teal-900',
-    Bar: 'border-purple-200 bg-purple-50/40 text-purple-900'
-  };
 
   return (
     <div className="space-y-6">
@@ -198,9 +207,10 @@ export default function DashboardView({
           <span className="text-xs text-slate-400">Click any card to filter inventory</span>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {departments.map((dept) => {
-            const Icon = deptIcons[dept.department] || Boxes;
+            const deptMeta = departmentsList.find(d => d.name === dept.department);
+            const Icon = (deptMeta && DEPT_ICON_MAP[deptMeta.icon]) || DEPT_ICON_MAP[dept.department] || Boxes;
             const isCurrent = selectedDepartment === dept.department;
             const healthPct = dept.total_items > 0
               ? Math.round((dept.in_stock / dept.total_items) * 100)

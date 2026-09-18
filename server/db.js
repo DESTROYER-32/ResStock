@@ -24,13 +24,57 @@ function initDb() {
     );
   `);
 
+  // Departments table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS departments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      icon TEXT DEFAULT 'Layers',
+      color TEXT DEFAULT 'text-indigo-400',
+      description TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Migration: Remove hardcoded department CHECK constraint on items table if present
+  try {
+    const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='items'").get();
+    if (tableSql && tableSql.sql && tableSql.sql.includes("CHECK(department IN ('Kitchen'")) {
+      db.pragma('foreign_keys = OFF');
+      db.exec(`
+        CREATE TABLE items_migration_temp (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          sku TEXT UNIQUE NOT NULL,
+          department TEXT NOT NULL,
+          category TEXT NOT NULL,
+          current_stock REAL NOT NULL DEFAULT 0,
+          unit TEXT NOT NULL,
+          min_threshold REAL NOT NULL DEFAULT 5,
+          cost_per_unit REAL NOT NULL DEFAULT 0.0,
+          supplier TEXT,
+          location TEXT,
+          notes TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO items_migration_temp SELECT id, name, sku, department, category, current_stock, unit, min_threshold, cost_per_unit, supplier, location, notes, created_at, updated_at FROM items;
+        DROP TABLE items;
+        ALTER TABLE items_migration_temp RENAME TO items;
+      `);
+      db.pragma('foreign_keys = ON');
+    }
+  } catch (migErr) {
+    console.warn('Items table migration note:', migErr.message);
+  }
+
   // Items table
   db.exec(`
     CREATE TABLE IF NOT EXISTS items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       sku TEXT UNIQUE NOT NULL,
-      department TEXT NOT NULL CHECK(department IN ('Kitchen', 'Housekeeping', 'Bar')),
+      department TEXT NOT NULL,
       category TEXT NOT NULL,
       current_stock REAL NOT NULL DEFAULT 0,
       unit TEXT NOT NULL,
@@ -98,6 +142,40 @@ function initDb() {
       FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL
     );
   `);
+
+  // Seed default departments if empty
+  const deptCount = db.prepare('SELECT COUNT(*) as count FROM departments').get().count;
+  if (deptCount === 0) {
+    const defaultDepts = [
+      { name: 'Kitchen', icon: 'Utensils', color: 'text-amber-400', description: 'Culinary preparation & food ingredients' },
+      { name: 'Housekeeping', icon: 'Sparkles', color: 'text-teal-400', description: 'Sanitation, cleaning & room supplies' },
+      { name: 'Bar', icon: 'Wine', color: 'text-purple-400', description: 'Beverages, spirits, cocktails & glassware' }
+    ];
+    const insertDept = db.prepare(`
+      INSERT OR IGNORE INTO departments (name, icon, color, description)
+      VALUES (?, ?, ?, ?)
+    `);
+    for (const d of defaultDepts) {
+      insertDept.run(d.name, d.icon, d.color, d.description);
+    }
+  }
+
+  // Ensure any distinct departments from existing items are registered
+  try {
+    const existingItemDepts = db.prepare('SELECT DISTINCT department FROM items WHERE department IS NOT NULL AND department != ""').all();
+    const insertDeptOrIgnore = db.prepare('INSERT OR IGNORE INTO departments (name, icon, color) VALUES (?, ?, ?)');
+    for (const row of existingItemDepts) {
+      if (row.department) {
+        insertDeptOrIgnore.run(
+          row.department,
+          row.department === 'Kitchen' ? 'Utensils' : row.department === 'Housekeeping' ? 'Sparkles' : row.department === 'Bar' ? 'Wine' : 'Layers',
+          row.department === 'Kitchen' ? 'text-amber-400' : row.department === 'Housekeeping' ? 'text-teal-400' : row.department === 'Bar' ? 'text-purple-400' : 'text-indigo-400'
+        );
+      }
+    }
+  } catch (e) {
+    // Ignore
+  }
 
   // Initialize Administrator & Staff users
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;

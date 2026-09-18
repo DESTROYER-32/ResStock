@@ -7,6 +7,7 @@ export default function ItemModal({
   onClose,
   itemToEdit,
   defaultDepartment,
+  departmentsList = [],
   onSubmit,
   loading
 }) {
@@ -25,12 +26,13 @@ export default function ItemModal({
   const [error, setError] = useState('');
 
   const isEdit = !!itemToEdit;
+  const fallbackDept = departmentsList.length > 0 ? departmentsList[0].name : 'Kitchen';
 
   useEffect(() => {
     if (itemToEdit) {
       setName(itemToEdit.name || '');
       setSku(itemToEdit.sku || '');
-      setDepartment(itemToEdit.department || 'Kitchen');
+      setDepartment(itemToEdit.department || fallbackDept);
       setCategory(itemToEdit.category || '');
       setCurrentStock(itemToEdit.current_stock?.toString() || '0');
       setUnit(itemToEdit.unit || 'pieces');
@@ -42,7 +44,7 @@ export default function ItemModal({
     } else {
       setName('');
       setSku('');
-      setDepartment(defaultDepartment && defaultDepartment !== 'All' ? defaultDepartment : 'Kitchen');
+      setDepartment(defaultDepartment && defaultDepartment !== 'All' ? defaultDepartment : fallbackDept);
       setCategory('');
       setCurrentStock('0');
       setUnit('pieces');
@@ -53,7 +55,7 @@ export default function ItemModal({
       setNotes('');
     }
     setError('');
-  }, [itemToEdit, defaultDepartment, isOpen]);
+  }, [itemToEdit, defaultDepartment, isOpen, departmentsList]);
 
   if (!isOpen) return null;
 
@@ -148,9 +150,11 @@ export default function ItemModal({
                 className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
                 required
               >
-                <option value="Kitchen">Kitchen</option>
-                <option value="Housekeeping">Housekeeping</option>
-                <option value="Bar">Bar</option>
+                {(departmentsList.length > 0 ? departmentsList : [{ name: 'Kitchen' }, { name: 'Housekeeping' }, { name: 'Bar' }]).map((d) => (
+                  <option key={d.name} value={d.name}>
+                    {d.name}
+                  </option>
+                ))}
               </select>
             </div>
           </div>

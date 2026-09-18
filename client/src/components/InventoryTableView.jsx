@@ -37,7 +37,8 @@ export default function InventoryTableView({
   onExportExcel,
   onOpenBulkEdit,
   onBulkDelete,
-  onOpenOrderItems
+  onOpenOrderItems,
+  departmentsList = []
 }) {
   const { currency, formatAmount } = useCurrency();
   const [searchTerm, setSearchTerm] = useState('');
@@ -145,7 +146,12 @@ export default function InventoryTableView({
     }
   };
 
-  const departments = ['All', 'Kitchen', 'Housekeeping', 'Bar'];
+  const departments = [
+    'All',
+    ...(departmentsList.length > 0
+      ? departmentsList.map(d => d.name)
+      : Array.from(new Set(items.map(i => i.department).filter(Boolean))))
+  ];
 
   return (
     <div className="space-y-4">
@@ -445,7 +451,9 @@ export default function InventoryTableView({
                               ? 'bg-amber-100 text-amber-800'
                               : item.department === 'Bar'
                               ? 'bg-purple-100 text-purple-800'
-                              : 'bg-teal-100 text-teal-800'
+                              : item.department === 'Housekeeping'
+                              ? 'bg-teal-100 text-teal-800'
+                              : 'bg-indigo-100 text-indigo-800'
                           }`}>
                             {item.department}
                           </span>
