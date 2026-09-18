@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.local
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+server/inventory.db*
+server/uploads/
+
+# Build artifacts
+dist/
+client/dist/
+build/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Antigravity CLI / Temp
+.gemini/
+scratch/
