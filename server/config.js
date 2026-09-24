@@ -12,6 +12,8 @@ const config = {
   isProduction,
   PORT: parseInt(process.env.PORT || '5000', 10),
   JWT_SECRET: process.env.JWT_SECRET || 'restaurant-stock-secret-key-2026',
+  TURSO_DATABASE_URL: (process.env.TURSO_DATABASE_URL || '').trim(),
+  TURSO_AUTH_TOKEN: (process.env.TURSO_AUTH_TOKEN || '').trim(),
 
   // Production Admin Account Configuration
   ADMIN_USERNAME: (process.env.ADMIN_USERNAME || process.env.ADMIN_USER || 'admin').trim(),

@@ -7,7 +7,7 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
 const config = require('./config');
-const db = require('./db');
+const { db, ensureDbInit, seedDemoData } = require('./db');
 
 const app = express();
 const PORT = config.PORT;
@@ -17,6 +17,17 @@ const JWT_SECRET = config.JWT_SECRET;
 app.use(cors());
 app.use(express.json());
 
+// Ensure database initialization
+app.use(async (req, res, next) => {
+  try {
+    await ensureDbInit();
+    next();
+  } catch (err) {
+    console.error('Database initialization error:', err);
+    res.status(500).json({ error: 'Database initialization failed: ' + err.message });
+  }
+});
+
 // Serve static frontend in production if built
 const clientDistPath = path.join(__dirname, '../client/dist');
 if (fs.existsSync(clientDistPath)) {
@@ -25,7 +36,7 @@ if (fs.existsSync(clientDistPath)) {
 
 // Multer storage for Excel uploads
 const upload = multer({
-  dest: path.join(__dirname, 'uploads/'),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB
 });
 
@@ -66,12 +77,12 @@ function optionalAuth(req, res, next) {
 // ==========================================
 
 // Demo user accounts list for quick-login helper in UI (hidden in production or if disabled)
-app.get('/api/auth/demo-users', (req, res) => {
+app.get('/api/auth/demo-users', async (req, res) => {
   if (!config.ENABLE_DEMO_LOGINS) {
     return res.json([]);
   }
 
-  const users = db.prepare('SELECT id, username, name, role, department FROM users').all();
+  const users = await db.prepare('SELECT id, username, name, role, department FROM users').all();
   const demoAccounts = users
     .filter(u => ['admin', 'chef_marco', 'bar_sarah', 'hk_elena'].includes(u.username))
     .map(u => ({
@@ -87,9 +98,9 @@ app.get('/api/auth/demo-users', (req, res) => {
 });
 
 // Register / Create New User (open if 0 users exist for initial admin setup, or requires Admin token)
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
   const { username, password, name, role, department } = req.body;
-  const userCount = db.prepare('SELECT COUNT(*) as c FROM users').get().c;
+  const userCount = (await db.prepare('SELECT COUNT(*) as c FROM users').get()).c;
 
   if (userCount > 0) {
     const authHeader = req.headers['authorization'];
@@ -109,7 +120,7 @@ app.post('/api/auth/register', (req, res) => {
     return res.status(400).json({ error: 'Username, password, and full name are required.' });
   }
 
-  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username.trim());
+  const existing = await db.prepare('SELECT id FROM users WHERE username = ?').get(username.trim());
   if (existing) {
     return res.status(400).json({ error: 'That username is already registered.' });
   }
@@ -122,7 +133,7 @@ app.post('/api/auth/register', (req, res) => {
     INSERT INTO users (username, password_hash, name, role, department)
     VALUES (?, ?, ?, ?, ?)
   `);
-  const result = insert.run(username.trim(), hash, name.trim(), userRole, userDept);
+  const result = await insert.run(username.trim(), hash, name.trim(), userRole, userDept);
 
   const newUser = {
     id: result.lastInsertRowid,
@@ -137,7 +148,7 @@ app.post('/api/auth/register', (req, res) => {
 });
 
 // Admin System Utility: Clear inventory data (all departments or a specific department)
-app.post('/api/system/clear-data', authenticateToken, (req, res) => {
+app.post('/api/system/clear-data', authenticateToken, async (req, res) => {
   const department = req.body?.department || req.body?.scope || 'All';
   const password = req.body?.password;
 
@@ -145,18 +156,18 @@ app.post('/api/system/clear-data', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Current password is required to confirm inventory data reset.' });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Incorrect password. Data reset authorization failed.' });
   }
 
-  db.pragma('foreign_keys = OFF');
+  await db.pragma('foreign_keys = OFF');
   if (department && department !== 'All') {
-    db.prepare('DELETE FROM transactions WHERE department = ?').run(department);
-    db.prepare('DELETE FROM items WHERE department = ?').run(department);
-    db.prepare('DELETE FROM orders WHERE department = ?').run(department);
+    await db.prepare('DELETE FROM transactions WHERE department = ?').run(department);
+    await db.prepare('DELETE FROM items WHERE department = ?').run(department);
+    await db.prepare('DELETE FROM orders WHERE department = ?').run(department);
   } else {
-    db.exec(`
+    await db.exec(`
       DELETE FROM transactions;
       DELETE FROM items;
       DELETE FROM order_items;
@@ -164,7 +175,7 @@ app.post('/api/system/clear-data', authenticateToken, (req, res) => {
       DELETE FROM sqlite_sequence WHERE name IN ('items', 'transactions', 'orders', 'order_items');
     `);
   }
-  db.pragma('foreign_keys = ON');
+  await db.pragma('foreign_keys = ON');
 
   const deptMsg = department && department !== 'All' ? `${department} department` : 'All inventory';
   res.json({
@@ -174,10 +185,9 @@ app.post('/api/system/clear-data', authenticateToken, (req, res) => {
 });
 
 // Admin System Utility: Re-seed sample data if user wants to test demo items
-app.post('/api/system/seed-demo', authenticateToken, (req, res) => {
+app.post('/api/system/seed-demo', authenticateToken, async (req, res) => {
   try {
-    delete require.cache[require.resolve('./db')];
-    const reseed = require('./db');
+    await seedDemoData();
     res.json({ success: true, message: 'Sample demo items and transactions restored.' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to reseed: ' + err.message });
@@ -185,14 +195,14 @@ app.post('/api/system/seed-demo', authenticateToken, (req, res) => {
 });
 
 // Login
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required.' });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username.trim());
+  const user = await db.prepare('SELECT * FROM users WHERE username = ?').get(username.trim());
   if (!user) {
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
@@ -219,8 +229,8 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // Verify current session
-app.get('/api/auth/me', authenticateToken, (req, res) => {
-  const user = db.prepare('SELECT id, username, name, role, department, created_at FROM users WHERE id = ?').get(req.user.id);
+app.get('/api/auth/me', authenticateToken, async (req, res) => {
+  const user = await db.prepare('SELECT id, username, name, role, department, created_at FROM users WHERE id = ?').get(req.user.id);
   if (!user) {
     return res.status(404).json({ error: 'User not found.' });
   }
@@ -231,7 +241,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
 // 2. DASHBOARD KPI & STATS
 // ==========================================
 
-app.get('/api/dashboard/stats', optionalAuth, (req, res) => {
+app.get('/api/dashboard/stats', optionalAuth, async (req, res) => {
   const { department } = req.query;
 
   let baseWhere = '';
@@ -242,7 +252,7 @@ app.get('/api/dashboard/stats', optionalAuth, (req, res) => {
   }
 
   // Total items, out of stock, low stock, total valuation
-  const overall = db.prepare(`
+  const overall = await db.prepare(`
     SELECT
       COUNT(*) as total_items,
       SUM(CASE WHEN current_stock = 0 THEN 1 ELSE 0 END) as out_of_stock,
@@ -254,15 +264,15 @@ app.get('/api/dashboard/stats', optionalAuth, (req, res) => {
   `).get(...params);
 
   // Department breakdown (dynamically queries all active departments)
-  const allDeptRows = db.prepare('SELECT name, icon, color FROM departments ORDER BY id ASC').all();
+  const allDeptRows = await db.prepare('SELECT name, icon, color FROM departments ORDER BY id ASC').all();
   const deptsToReport = allDeptRows.length > 0 ? allDeptRows : [
     { name: 'Kitchen', icon: 'Utensils', color: 'text-amber-400' },
     { name: 'Housekeeping', icon: 'Sparkles', color: 'text-teal-400' },
     { name: 'Bar', icon: 'Wine', color: 'text-purple-400' }
   ];
-  const departments = deptsToReport.map(deptObj => {
+  const departments = await Promise.all(deptsToReport.map(async deptObj => {
     const dept = deptObj.name;
-    const stats = db.prepare(`
+    const stats = await db.prepare(`
       SELECT
         COUNT(*) as total_items,
         SUM(CASE WHEN current_stock = 0 THEN 1 ELSE 0 END) as out_of_stock,
@@ -278,13 +288,13 @@ app.get('/api/dashboard/stats', optionalAuth, (req, res) => {
       color: deptObj.color,
       ...stats
     };
-  });
+  }));
 
   // Recent transactions summary (today)
   const todayWhere = department && department !== 'All' ? 'AND department = ?' : '';
   const todayParams = department && department !== 'All' ? [department] : [];
 
-  const activityToday = db.prepare(`
+  const activityToday = await db.prepare(`
     SELECT
       SUM(CASE WHEN type = 'IN' THEN 1 ELSE 0 END) as stock_in_count,
       SUM(CASE WHEN type = 'OUT' THEN 1 ELSE 0 END) as stock_out_count,
@@ -295,7 +305,7 @@ app.get('/api/dashboard/stats', optionalAuth, (req, res) => {
   `).get(...todayParams);
 
   // Critical alert items (Out of stock and low stock items needing reorder)
-  const criticalItems = db.prepare(`
+  const criticalItems = await db.prepare(`
     SELECT id, name, sku, department, category, current_stock, min_threshold, unit, cost_per_unit, supplier,
       CASE
         WHEN current_stock = 0 THEN 'OUT_OF_STOCK'
@@ -313,7 +323,7 @@ app.get('/api/dashboard/stats', optionalAuth, (req, res) => {
   // Pending purchase orders
   const orderWhere = department && department !== 'All' ? "WHERE department = ? AND status = 'PENDING'" : "WHERE status = 'PENDING'";
   const orderParams = department && department !== 'All' ? [department] : [];
-  const pendingOrdersCount = db.prepare(`SELECT COUNT(*) as count FROM orders ${orderWhere}`).get(...orderParams).count;
+  const pendingOrdersCount = (await db.prepare(`SELECT COUNT(*) as count FROM orders ${orderWhere}`).get(...orderParams)).count;
 
   res.json({
     overall: {
@@ -337,7 +347,7 @@ app.get('/api/dashboard/stats', optionalAuth, (req, res) => {
 // 3. INVENTORY ITEMS CRUD & QUERY
 // ==========================================
 
-app.get('/api/items', (req, res) => {
+app.get('/api/items', async (req, res) => {
   const { department, search, status, category, sortBy, sortOrder } = req.query;
 
   let query = `
@@ -395,13 +405,13 @@ app.get('/api/items', (req, res) => {
 
   query += ` ORDER BY ${sortCol} ${order}`;
 
-  const items = db.prepare(query).all(...params);
+  const items = await db.prepare(query).all(...params);
   res.json(items);
 });
 
 // Get single item with its transactions
-app.get('/api/items/:id', (req, res) => {
-  const item = db.prepare(`
+app.get('/api/items/:id', async (req, res) => {
+  const item = await db.prepare(`
     SELECT *,
       CASE
         WHEN current_stock = 0 THEN 'out_of_stock'
@@ -415,7 +425,7 @@ app.get('/api/items/:id', (req, res) => {
     return res.status(404).json({ error: 'Item not found.' });
   }
 
-  const transactions = db.prepare(`
+  const transactions = await db.prepare(`
     SELECT * FROM transactions
     WHERE item_id = ?
     ORDER BY created_at DESC
@@ -426,7 +436,7 @@ app.get('/api/items/:id', (req, res) => {
 });
 
 // Create item
-app.post('/api/items', authenticateToken, (req, res) => {
+app.post('/api/items', authenticateToken, async (req, res) => {
   const {
     name,
     sku,
@@ -445,7 +455,7 @@ app.post('/api/items', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Item Name, Department, and Unit are required.' });
   }
 
-  const validDepts = db.prepare('SELECT name FROM departments').all().map(d => d.name);
+  const validDepts = (await db.prepare('SELECT name FROM departments').all()).map(d => d.name);
   if (!validDepts.includes(department)) {
     return res.status(400).json({ error: `Invalid department "${department}". Active departments are: ${validDepts.join(', ')}` });
   }
@@ -454,12 +464,12 @@ app.post('/api/items', authenticateToken, (req, res) => {
   let generatedSku = sku ? sku.trim().toUpperCase() : null;
   if (!generatedSku) {
     const deptPrefix = department.substring(0, 3).toUpperCase();
-    const count = db.prepare('SELECT COUNT(*) as c FROM items WHERE department = ?').get(department).c + 1;
+    const count = (await db.prepare('SELECT COUNT(*) as c FROM items WHERE department = ?').get(department)).c + 1;
     generatedSku = `${deptPrefix}-${String(count).padStart(3, '0')}`;
   }
 
   // Check unique SKU
-  const existing = db.prepare('SELECT id FROM items WHERE sku = ?').get(generatedSku);
+  const existing = await db.prepare('SELECT id FROM items WHERE sku = ?').get(generatedSku);
   if (existing) {
     return res.status(400).json({ error: `An item with SKU "${generatedSku}" already exists.` });
   }
@@ -475,7 +485,7 @@ app.post('/api/items', authenticateToken, (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = insert.run(
+    const result = await insert.run(
       name.trim(),
       generatedSku,
       department,
@@ -491,7 +501,7 @@ app.post('/api/items', authenticateToken, (req, res) => {
 
     // Record initial transaction if stock > 0
     if (stockVal > 0) {
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO transactions (item_id, item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
         VALUES (?, ?, ?, ?, 'INITIAL', ?, 0, ?, ?, 'Initial Manual Entry', 'Item manually created')
       `).run(
@@ -505,7 +515,7 @@ app.post('/api/items', authenticateToken, (req, res) => {
       );
     }
 
-    const newItem = db.prepare('SELECT * FROM items WHERE id = ?').get(result.lastInsertRowid);
+    const newItem = await db.prepare('SELECT * FROM items WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json(newItem);
   } catch (err) {
     console.error('Error creating item:', err);
@@ -514,7 +524,7 @@ app.post('/api/items', authenticateToken, (req, res) => {
 });
 
 // Bulk Update items
-app.put('/api/items/bulk', authenticateToken, (req, res) => {
+app.put('/api/items/bulk', authenticateToken, async (req, res) => {
   const { item_ids, updates, stock_adjustment } = req.body;
 
   if (!Array.isArray(item_ids) || item_ids.length === 0) {
@@ -522,9 +532,9 @@ app.put('/api/items/bulk', authenticateToken, (req, res) => {
   }
 
   try {
-    const updateTx = db.transaction(() => {
+    const updateTx = db.transaction(async () => {
       for (const id of item_ids) {
-        const currentItem = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
+        const currentItem = await db.prepare('SELECT * FROM items WHERE id = ?').get(id);
         if (!currentItem) continue;
 
         let newStock = currentItem.current_stock;
@@ -583,7 +593,7 @@ app.put('/api/items/bulk', authenticateToken, (req, res) => {
 
         if (stockDelta !== 0) {
           const type = stockDelta > 0 ? 'IN' : 'OUT';
-          db.prepare(`
+          await db.prepare(`
             INSERT INTO transactions (item_id, item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
@@ -603,7 +613,7 @@ app.put('/api/items/bulk', authenticateToken, (req, res) => {
       }
     });
 
-    updateTx();
+    await updateTx();
     res.json({ success: true, count: item_ids.length, message: `Successfully updated ${item_ids.length} items.` });
   } catch (err) {
     console.error('Bulk update error:', err);
@@ -612,7 +622,7 @@ app.put('/api/items/bulk', authenticateToken, (req, res) => {
 });
 
 // Bulk Delete items
-app.delete('/api/items/bulk', authenticateToken, (req, res) => {
+app.delete('/api/items/bulk', authenticateToken, async (req, res) => {
   const { item_ids } = req.body;
 
   if (!Array.isArray(item_ids) || item_ids.length === 0) {
@@ -620,12 +630,12 @@ app.delete('/api/items/bulk', authenticateToken, (req, res) => {
   }
 
   try {
-    const deleteTx = db.transaction(() => {
+    const deleteTx = db.transaction(async () => {
       const placeholders = item_ids.map(() => '?').join(',');
-      db.prepare(`DELETE FROM items WHERE id IN (${placeholders})`).run(...item_ids);
+      await db.prepare(`DELETE FROM items WHERE id IN (${placeholders})`).run(...item_ids);
     });
 
-    deleteTx();
+    await deleteTx();
     res.json({ success: true, count: item_ids.length, message: `Successfully deleted ${item_ids.length} items.` });
   } catch (err) {
     console.error('Bulk delete error:', err);
@@ -634,7 +644,7 @@ app.delete('/api/items/bulk', authenticateToken, (req, res) => {
 });
 
 // Update item
-app.put('/api/items/:id', authenticateToken, (req, res) => {
+app.put('/api/items/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const {
     name,
@@ -650,14 +660,14 @@ app.put('/api/items/:id', authenticateToken, (req, res) => {
     notes
   } = req.body;
 
-  const currentItem = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
+  const currentItem = await db.prepare('SELECT * FROM items WHERE id = ?').get(id);
   if (!currentItem) {
     return res.status(404).json({ error: 'Item not found.' });
   }
 
   // Check unique SKU if changed
   if (sku && sku.trim().toUpperCase() !== currentItem.sku) {
-    const existing = db.prepare('SELECT id FROM items WHERE sku = ? AND id != ?').get(sku.trim().toUpperCase(), id);
+    const existing = await db.prepare('SELECT id FROM items WHERE sku = ? AND id != ?').get(sku.trim().toUpperCase(), id);
     if (existing) {
       return res.status(400).json({ error: `SKU "${sku}" is already in use by another item.` });
     }
@@ -683,7 +693,7 @@ app.put('/api/items/:id', authenticateToken, (req, res) => {
     WHERE id = ?
   `);
 
-  update.run(
+  await update.run(
     name ? name.trim() : null,
     sku ? sku.trim().toUpperCase() : null,
     department,
@@ -700,7 +710,7 @@ app.put('/api/items/:id', authenticateToken, (req, res) => {
 
   // If stock was directly changed, record adjustment transaction
   if (stockDelta !== 0) {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO transactions (item_id, item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
       VALUES (?, ?, ?, ?, 'ADJUSTMENT', ?, ?, ?, ?, 'Manual Adjustment', 'Direct stock count edit in item properties')
     `).run(
@@ -715,7 +725,7 @@ app.put('/api/items/:id', authenticateToken, (req, res) => {
     );
   }
 
-  const updatedItem = db.prepare(`
+  const updatedItem = await db.prepare(`
     SELECT *,
       CASE
         WHEN current_stock = 0 THEN 'out_of_stock'
@@ -729,14 +739,14 @@ app.put('/api/items/:id', authenticateToken, (req, res) => {
 });
 
 // Delete item
-app.delete('/api/items/:id', authenticateToken, (req, res) => {
+app.delete('/api/items/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
+  const item = await db.prepare('SELECT * FROM items WHERE id = ?').get(id);
   if (!item) {
     return res.status(404).json({ error: 'Item not found.' });
   }
 
-  db.prepare('DELETE FROM items WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM items WHERE id = ?').run(id);
   res.json({ success: true, message: `Item "${item.name}" deleted successfully.` });
 });
 
@@ -745,7 +755,7 @@ app.delete('/api/items/:id', authenticateToken, (req, res) => {
 // ==========================================
 
 // Stock In (Order / Receive Stock)
-app.post('/api/transactions/stock-in', authenticateToken, (req, res) => {
+app.post('/api/transactions/stock-in', authenticateToken, async (req, res) => {
   const { item_id, quantity, destination_or_source, notes } = req.body;
 
   const qty = parseFloat(quantity);
@@ -753,7 +763,7 @@ app.post('/api/transactions/stock-in', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Please select an item and provide a valid quantity greater than 0.' });
   }
 
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
+  const item = await db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
   if (!item) {
     return res.status(404).json({ error: 'Selected item does not exist.' });
   }
@@ -761,9 +771,9 @@ app.post('/api/transactions/stock-in', authenticateToken, (req, res) => {
   const prevStock = item.current_stock;
   const newStock = prevStock + qty;
 
-  const transactionProcess = db.transaction(() => {
+  const transactionProcess = db.transaction(async () => {
     // 1. Update item stock
-    db.prepare(`
+    await db.prepare(`
       UPDATE items
       SET current_stock = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -775,7 +785,7 @@ app.post('/api/transactions/stock-in', authenticateToken, (req, res) => {
       VALUES (?, ?, ?, ?, 'IN', ?, ?, ?, ?, ?, ?)
     `);
 
-    const txInfo = insertTx.run(
+    const txInfo = await insertTx.run(
       item.id,
       item.name,
       item.sku,
@@ -791,9 +801,9 @@ app.post('/api/transactions/stock-in', authenticateToken, (req, res) => {
     return { txId: txInfo.lastInsertRowid, newStock };
   });
 
-  const result = transactionProcess();
+  const result = await transactionProcess();
 
-  const updatedItem = db.prepare(`
+  const updatedItem = await db.prepare(`
     SELECT *,
       CASE
         WHEN current_stock = 0 THEN 'out_of_stock'
@@ -812,7 +822,7 @@ app.post('/api/transactions/stock-in', authenticateToken, (req, res) => {
 });
 
 // Stock Out (Issue Stock)
-app.post('/api/transactions/stock-out', authenticateToken, (req, res) => {
+app.post('/api/transactions/stock-out', authenticateToken, async (req, res) => {
   const { item_id, quantity, destination_or_source, notes, allow_negative } = req.body;
 
   const qty = parseFloat(quantity);
@@ -820,7 +830,7 @@ app.post('/api/transactions/stock-out', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Please select an item and provide a valid quantity greater than 0.' });
   }
 
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
+  const item = await db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
   if (!item) {
     return res.status(404).json({ error: 'Selected item does not exist.' });
   }
@@ -836,9 +846,9 @@ app.post('/api/transactions/stock-out', authenticateToken, (req, res) => {
   const prevStock = item.current_stock;
   const newStock = Math.max(0, prevStock - qty); // Prevent negative unless specifically configured
 
-  const transactionProcess = db.transaction(() => {
+  const transactionProcess = db.transaction(async () => {
     // 1. Update item stock
-    db.prepare(`
+    await db.prepare(`
       UPDATE items
       SET current_stock = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -850,7 +860,7 @@ app.post('/api/transactions/stock-out', authenticateToken, (req, res) => {
       VALUES (?, ?, ?, ?, 'OUT', ?, ?, ?, ?, ?, ?)
     `);
 
-    const txInfo = insertTx.run(
+    const txInfo = await insertTx.run(
       item.id,
       item.name,
       item.sku,
@@ -866,9 +876,9 @@ app.post('/api/transactions/stock-out', authenticateToken, (req, res) => {
     return { txId: txInfo.lastInsertRowid, newStock };
   });
 
-  const result = transactionProcess();
+  const result = await transactionProcess();
 
-  const updatedItem = db.prepare(`
+  const updatedItem = await db.prepare(`
     SELECT *,
       CASE
         WHEN current_stock = 0 THEN 'out_of_stock'
@@ -887,14 +897,14 @@ app.post('/api/transactions/stock-out', authenticateToken, (req, res) => {
 });
 
 // Quick Stock Tally (+1 or -1 or delta) directly from row
-app.post('/api/transactions/quick-adjust', authenticateToken, (req, res) => {
+app.post('/api/transactions/quick-adjust', authenticateToken, async (req, res) => {
   const { item_id, delta, reason } = req.body;
   const numDelta = parseFloat(delta);
   if (!item_id || isNaN(numDelta) || numDelta === 0) {
     return res.status(400).json({ error: 'Invalid delta value.' });
   }
 
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
+  const item = await db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
   if (!item) {
     return res.status(404).json({ error: 'Item not found.' });
   }
@@ -904,9 +914,9 @@ app.post('/api/transactions/quick-adjust', authenticateToken, (req, res) => {
   const actualChanged = Math.abs(newStock - prevStock);
   const type = numDelta > 0 ? 'IN' : 'OUT';
 
-  db.transaction(() => {
-    db.prepare('UPDATE items SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStock, item_id);
-    db.prepare(`
+  await db.transaction(async () => {
+    await db.prepare('UPDATE items SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStock, item_id);
+    await db.prepare(`
       INSERT INTO transactions (item_id, item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -924,7 +934,7 @@ app.post('/api/transactions/quick-adjust', authenticateToken, (req, res) => {
     );
   })();
 
-  const updatedItem = db.prepare(`
+  const updatedItem = await db.prepare(`
     SELECT *,
       CASE
         WHEN current_stock = 0 THEN 'out_of_stock'
@@ -938,7 +948,7 @@ app.post('/api/transactions/quick-adjust', authenticateToken, (req, res) => {
 });
 
 // Transaction History Log Query
-app.get('/api/transactions', (req, res) => {
+app.get('/api/transactions', async (req, res) => {
   const { department, type, item_id, search, limit, offset } = req.query;
 
   let query = 'SELECT * FROM transactions WHERE 1=1';
@@ -971,7 +981,7 @@ app.get('/api/transactions', (req, res) => {
   const off = parseInt(offset) || 0;
   query += ` LIMIT ${lim} OFFSET ${off}`;
 
-  const transactions = db.prepare(query).all(...params);
+  const transactions = await db.prepare(query).all(...params);
   res.json(transactions);
 });
 
@@ -980,7 +990,7 @@ app.get('/api/transactions', (req, res) => {
 // ==========================================
 
 // Get all orders with line items
-app.get('/api/orders', optionalAuth, (req, res) => {
+app.get('/api/orders', optionalAuth, async (req, res) => {
   const { department, status, supplier, search } = req.query;
 
   let where = [];
@@ -1005,30 +1015,30 @@ app.get('/api/orders', optionalAuth, (req, res) => {
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-  const orders = db.prepare(`SELECT * FROM orders ${whereClause} ORDER BY created_at DESC`).all(...params);
+  const orders = await db.prepare(`SELECT * FROM orders ${whereClause} ORDER BY created_at DESC`).all(...params);
 
   const getItemsStmt = db.prepare('SELECT * FROM order_items WHERE order_id = ?');
-  const result = orders.map(ord => ({
+  const result = await Promise.all(orders.map(async ord => ({
     ...ord,
-    items: getItemsStmt.all(ord.id)
-  }));
+    items: await getItemsStmt.all(ord.id)
+  })));
 
   res.json(result);
 });
 
 // Get single order with line items
-app.get('/api/orders/:id', optionalAuth, (req, res) => {
+app.get('/api/orders/:id', optionalAuth, async (req, res) => {
   const { id } = req.params;
-  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+  const order = await db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
   if (!order) {
     return res.status(404).json({ error: 'Order not found.' });
   }
-  const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(id);
+  const items = await db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(id);
   res.json({ ...order, items });
 });
 
 // Generate vendor orders from selected items list
-app.post('/api/orders/generate', authenticateToken, (req, res) => {
+app.post('/api/orders/generate', authenticateToken, async (req, res) => {
   const { items: orderItems, notes, department } = req.body;
 
   if (!Array.isArray(orderItems) || orderItems.length === 0) {
@@ -1040,7 +1050,7 @@ app.post('/api/orders/generate', authenticateToken, (req, res) => {
     const groups = {};
 
     for (const entry of orderItems) {
-      const dbItem = db.prepare('SELECT * FROM items WHERE id = ?').get(entry.item_id);
+      const dbItem = await db.prepare('SELECT * FROM items WHERE id = ?').get(entry.item_id);
       if (!dbItem) continue;
 
       const vendor = (entry.supplier || dbItem.supplier || 'General Supplier').trim();
@@ -1076,7 +1086,7 @@ app.post('/api/orders/generate', authenticateToken, (req, res) => {
 
     const createdOrders = [];
 
-    const generateTx = db.transaction(() => {
+    const generateTx = db.transaction(async () => {
       for (const key of groupKeys) {
         const grp = groups[key];
         const orderNumber = `PO-${Date.now().toString().slice(-5)}${Math.floor(Math.random() * 90 + 10)}`;
@@ -1088,7 +1098,7 @@ app.post('/api/orders/generate', authenticateToken, (req, res) => {
           VALUES (?, ?, ?, 'PENDING', ?, ?, ?, ?)
         `);
 
-        const orderRes = insertOrderStmt.run(
+        const orderRes = await insertOrderStmt.run(
           orderNumber,
           grp.supplier,
           grp.department,
@@ -1106,7 +1116,7 @@ app.post('/api/orders/generate', authenticateToken, (req, res) => {
         `);
 
         for (const itm of grp.items) {
-          insertItemStmt.run(
+          await insertItemStmt.run(
             orderId,
             itm.item_id,
             itm.name,
@@ -1130,7 +1140,7 @@ app.post('/api/orders/generate', authenticateToken, (req, res) => {
       }
     });
 
-    generateTx();
+    await generateTx();
 
     res.status(201).json({
       success: true,
@@ -1145,11 +1155,11 @@ app.post('/api/orders/generate', authenticateToken, (req, res) => {
 });
 
 // Mark order as received & immediately update stock with custom received quantities
-app.post('/api/orders/:id/receive', authenticateToken, (req, res) => {
+app.post('/api/orders/:id/receive', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { received_items, notes, destination } = req.body || {};
 
-  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+  const order = await db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
   if (!order) {
     return res.status(404).json({ error: 'Order not found.' });
   }
@@ -1158,10 +1168,10 @@ app.post('/api/orders/:id/receive', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'This order has already been marked as received.' });
   }
 
-  const orderLineItems = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(id);
+  const orderLineItems = await db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(id);
 
   try {
-    const receiveTx = db.transaction(() => {
+    const receiveTx = db.transaction(async () => {
       for (const line of orderLineItems) {
         // Find matching received quantity submitted by user, or default to ordered_quantity
         let recQty = line.ordered_quantity;
@@ -1173,19 +1183,19 @@ app.post('/api/orders/:id/receive', authenticateToken, (req, res) => {
         }
 
         // Update line item record
-        db.prepare('UPDATE order_items SET received_quantity = ? WHERE id = ?').run(recQty, line.id);
+        await db.prepare('UPDATE order_items SET received_quantity = ? WHERE id = ?').run(recQty, line.id);
 
         // Update inventory item stock immediately if item exists
         if (line.item_id) {
-          const inventoryItem = db.prepare('SELECT * FROM items WHERE id = ?').get(line.item_id);
+          const inventoryItem = await db.prepare('SELECT * FROM items WHERE id = ?').get(line.item_id);
           if (inventoryItem) {
             const prevStock = inventoryItem.current_stock;
             const newStock = prevStock + recQty;
 
-            db.prepare('UPDATE items SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStock, line.item_id);
+            await db.prepare('UPDATE items SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(newStock, line.item_id);
 
             if (recQty > 0) {
-              db.prepare(`
+              await db.prepare(`
                 INSERT INTO transactions (item_id, item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
                 VALUES (?, ?, ?, ?, 'IN', ?, ?, ?, ?, ?, ?)
               `).run(
@@ -1206,7 +1216,7 @@ app.post('/api/orders/:id/receive', authenticateToken, (req, res) => {
       }
 
       // Mark order as RECEIVED
-      db.prepare(`
+      await db.prepare(`
         UPDATE orders SET
           status = 'RECEIVED',
           received_at = CURRENT_TIMESTAMP
@@ -1214,10 +1224,10 @@ app.post('/api/orders/:id/receive', authenticateToken, (req, res) => {
       `).run(id);
     });
 
-    receiveTx();
+    await receiveTx();
 
-    const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
-    const updatedLines = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(id);
+    const updatedOrder = await db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+    const updatedLines = await db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(id);
 
     res.json({
       success: true,
@@ -1234,14 +1244,14 @@ app.post('/api/orders/:id/receive', authenticateToken, (req, res) => {
 });
 
 // Delete / Cancel Order
-app.delete('/api/orders/:id', authenticateToken, (req, res) => {
+app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+  const order = await db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
   if (!order) {
     return res.status(404).json({ error: 'Order not found.' });
   }
 
-  db.prepare('DELETE FROM orders WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM orders WHERE id = ?').run(id);
   res.json({ success: true, message: `Order ${order.order_number} deleted.` });
 });
 
@@ -1250,20 +1260,18 @@ app.delete('/api/orders/:id', authenticateToken, (req, res) => {
 // ==========================================
 
 // Parse and import Excel / CSV file
-app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, res) => {
+app.post('/api/excel/import', authenticateToken, upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Please upload an Excel (.xlsx, .xls) or CSV file.' });
   }
 
-  const filePath = req.file.path;
   try {
-    const workbook = XLSX.readFile(filePath);
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
 
     if (!rawRows || rawRows.length === 0) {
-      fs.unlinkSync(filePath);
       return res.status(400).json({ error: 'The uploaded file is empty or has no readable rows.' });
     }
 
@@ -1313,8 +1321,8 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
       return null;
     }
 
-    const processImport = db.transaction((rows) => {
-      rows.forEach((row, idx) => {
+    const processImport = db.transaction(async (rows) => {
+      for (const [idx, row] of rows.entries()) {
         const rowNum = idx + 2; // header is row 1
 
         const name = getVal(row, ['Item Name', 'ItemName', 'Name', 'Product Name', 'Description', 'Item']);
@@ -1338,14 +1346,14 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
             department = 'Housekeeping';
           } else {
             // Check if matching an existing department case-insensitively
-            const matched = db.prepare('SELECT name FROM departments WHERE LOWER(name) = LOWER(?)').get(rawDept);
+            const matched = await db.prepare('SELECT name FROM departments WHERE LOWER(name) = LOWER(?)').get(rawDept);
             if (matched) {
               department = matched.name;
             } else {
               // Proper case custom department and register
               department = rawDept.charAt(0).toUpperCase() + rawDept.slice(1);
               try {
-                db.prepare('INSERT OR IGNORE INTO departments (name) VALUES (?)').run(department);
+                await db.prepare('INSERT OR IGNORE INTO departments (name) VALUES (?)').run(department);
               } catch (e) {}
             }
           }
@@ -1373,15 +1381,15 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
         const notes = getVal(row, ['Notes', 'Comment', 'Remarks']) || 'Imported via Excel';
 
         // Check if item exists by SKU or by Name + Dept
-        let existing = findItemBySku.get(sku);
+        let existing = await findItemBySku.get(sku);
         if (!existing) {
-          existing = findItemByNameAndDept.get(name.toString().trim(), department);
+          existing = await findItemByNameAndDept.get(name.toString().trim(), department);
         }
 
         if (existing) {
           // Update existing item
           const prevStock = existing.current_stock;
-          updateItemStmt.run({
+          await updateItemStmt.run({
             id: existing.id,
             name: name.toString().trim(),
             department,
@@ -1397,7 +1405,7 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
           updatedCount++;
 
           if (current_stock !== prevStock) {
-            insertTxStmt.run(
+            await insertTxStmt.run(
               existing.id,
               name.toString().trim(),
               existing.sku,
@@ -1410,7 +1418,7 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
           }
         } else {
           // Insert new item
-          const info = insertItemStmt.run({
+          const info = await insertItemStmt.run({
             name: name.toString().trim(),
             sku,
             department,
@@ -1425,7 +1433,7 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
           });
           insertedCount++;
 
-          insertTxStmt.run(
+          await insertTxStmt.run(
             info.lastInsertRowid,
             name.toString().trim(),
             sku,
@@ -1436,15 +1444,10 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
             req.user.name || req.user.username
           );
         }
-      });
+      }
     });
 
-    processImport(rawRows);
-
-    // Clean up uploaded file
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    await processImport(rawRows);
 
     res.json({
       success: true,
@@ -1455,9 +1458,6 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
       errors
     });
   } catch (err) {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
     console.error('Excel import error:', err);
     res.status(500).json({ error: 'Failed to process Excel file: ' + err.message });
   }
@@ -1465,7 +1465,7 @@ app.post('/api/excel/import', authenticateToken, upload.single('file'), (req, re
 
 // Export current inventory to Excel
 // Export current inventory to Excel (supports department-wise, seller-wise, and filtered exports)
-app.get('/api/excel/export', (req, res) => {
+app.get('/api/excel/export', async (req, res) => {
   const {
     department = 'All',
     supplier = 'All',
@@ -1516,7 +1516,7 @@ app.get('/api/excel/export', (req, res) => {
 
   baseQuery += ' ORDER BY department, supplier, category, name';
 
-  const items = db.prepare(baseQuery).all(...params);
+  const items = await db.prepare(baseQuery).all(...params);
   const curSymbol = currency || '₹';
 
   const mapItemRow = (item) => ({
@@ -1635,7 +1635,7 @@ app.get('/api/excel/export', (req, res) => {
     filename = `Stock_Department_Wise_${dateStr}.xlsx`;
 
     // Group items by department (dynamically loads registered departments)
-    const allDbDepts = db.prepare('SELECT name FROM departments ORDER BY id ASC').all().map(d => d.name);
+    const allDbDepts = (await db.prepare('SELECT name FROM departments ORDER BY id ASC').all()).map(d => d.name);
     const deptGroups = {};
     (allDbDepts.length > 0 ? allDbDepts : ['Kitchen', 'Housekeeping', 'Bar']).forEach(d => {
       deptGroups[d] = [];
@@ -1725,7 +1725,7 @@ app.get('/api/excel/export', (req, res) => {
 });
 
 // Download sample import template
-app.get('/api/excel/template', (req, res) => {
+app.get('/api/excel/template', async (req, res) => {
   const templatePath = path.join(__dirname, '../client/public/sample_inventory_template.xlsx');
   if (fs.existsSync(templatePath)) {
     return res.download(templatePath, 'sample_inventory_template.xlsx');
@@ -1738,13 +1738,13 @@ app.get('/api/excel/template', (req, res) => {
 // ==========================================
 
 // Get all active departments with live stats
-app.get('/api/departments', (req, res) => {
+app.get('/api/departments', async (req, res) => {
   try {
-    const depts = db.prepare('SELECT id, name, icon, color, description, created_at FROM departments ORDER BY id ASC').all();
+    const depts = await db.prepare('SELECT id, name, icon, color, description, created_at FROM departments ORDER BY id ASC').all();
 
     // Enrich with item counts and health statistics
-    const enriched = depts.map(d => {
-      const stats = db.prepare(`
+    const enriched = await Promise.all(depts.map(async d => {
+      const stats = await db.prepare(`
         SELECT
           COUNT(*) as total_items,
           SUM(CASE WHEN current_stock = 0 THEN 1 ELSE 0 END) as out_of_stock,
@@ -1759,7 +1759,7 @@ app.get('/api/departments', (req, res) => {
         ...d,
         ...stats
       };
-    });
+    }));
 
     res.json(enriched);
   } catch (err) {
@@ -1769,7 +1769,7 @@ app.get('/api/departments', (req, res) => {
 });
 
 // Add a new department (Admin only)
-app.post('/api/departments', authenticateToken, (req, res) => {
+app.post('/api/departments', authenticateToken, async (req, res) => {
   if (req.user.role !== 'Admin') {
     return res.status(403).json({ error: 'Only Administrators can create new departments.' });
   }
@@ -1786,7 +1786,7 @@ app.post('/api/departments', authenticateToken, (req, res) => {
   }
 
   // Check unique
-  const existing = db.prepare('SELECT id FROM departments WHERE LOWER(name) = LOWER(?)').get(trimmedName);
+  const existing = await db.prepare('SELECT id FROM departments WHERE LOWER(name) = LOWER(?)').get(trimmedName);
   if (existing) {
     return res.status(400).json({ error: `A department named "${trimmedName}" already exists.` });
   }
@@ -1796,13 +1796,13 @@ app.post('/api/departments', authenticateToken, (req, res) => {
     const defaultIcon = icon || 'Layers';
     const desc = description ? description.trim() : '';
 
-    const result = db.prepare(`
+    const result = await db.prepare(`
       INSERT INTO departments (name, icon, color, description)
       VALUES (?, ?, ?, ?)
     `).run(trimmedName, defaultIcon, defaultColor, desc);
 
     // Audit log
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO transactions (item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
       VALUES (?, ?, ?, 'ADJUSTMENT', 0, 0, 0, ?, 'System Configuration', ?)
     `).run(
@@ -1813,7 +1813,7 @@ app.post('/api/departments', authenticateToken, (req, res) => {
       `Administrator added department "${trimmedName}"`
     );
 
-    const created = db.prepare('SELECT * FROM departments WHERE id = ?').get(result.lastInsertRowid);
+    const created = await db.prepare('SELECT * FROM departments WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json({
       message: `Department "${trimmedName}" created successfully.`,
       department: {
@@ -1832,7 +1832,7 @@ app.post('/api/departments', authenticateToken, (req, res) => {
 });
 
 // Remove a department (Admin only)
-app.delete('/api/departments/:name', authenticateToken, (req, res) => {
+app.delete('/api/departments/:name', authenticateToken, async (req, res) => {
   if (req.user.role !== 'Admin') {
     return res.status(403).json({ error: 'Only Administrators can remove departments.' });
   }
@@ -1842,19 +1842,19 @@ app.delete('/api/departments/:name', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Cannot remove this department.' });
   }
 
-  const dept = db.prepare('SELECT * FROM departments WHERE LOWER(name) = LOWER(?)').get(deptName);
+  const dept = await db.prepare('SELECT * FROM departments WHERE LOWER(name) = LOWER(?)').get(deptName);
   if (!dept) {
     return res.status(404).json({ error: `Department "${deptName}" was not found.` });
   }
 
   // Prevent removing if only 1 department remains
-  const totalDepts = db.prepare('SELECT COUNT(*) as c FROM departments').get().c;
+  const totalDepts = (await db.prepare('SELECT COUNT(*) as c FROM departments').get()).c;
   if (totalDepts <= 1) {
     return res.status(400).json({ error: 'Cannot remove the last remaining department. At least one department is required.' });
   }
 
   // Prevent removing if items are assigned to this department
-  const itemCount = db.prepare('SELECT COUNT(*) as c FROM items WHERE department = ?').get(dept.name).c;
+  const itemCount = (await db.prepare('SELECT COUNT(*) as c FROM items WHERE department = ?').get(dept.name)).c;
   if (itemCount > 0) {
     return res.status(400).json({
       error: `Cannot remove "${dept.name}" because it currently has ${itemCount} active item${itemCount > 1 ? 's' : ''}. Please reassign or delete these items first.`
@@ -1862,7 +1862,7 @@ app.delete('/api/departments/:name', authenticateToken, (req, res) => {
   }
 
   // Prevent removing if pending orders exist
-  const pendingOrders = db.prepare("SELECT COUNT(*) as c FROM orders WHERE department = ? AND status = 'PENDING'").get(dept.name).c;
+  const pendingOrders = (await db.prepare("SELECT COUNT(*) as c FROM orders WHERE department = ? AND status = 'PENDING'").get(dept.name)).c;
   if (pendingOrders > 0) {
     return res.status(400).json({
       error: `Cannot remove "${dept.name}" because it has ${pendingOrders} pending purchase order${pendingOrders > 1 ? 's' : ''}.`
@@ -1870,10 +1870,10 @@ app.delete('/api/departments/:name', authenticateToken, (req, res) => {
   }
 
   try {
-    db.prepare('DELETE FROM departments WHERE id = ?').run(dept.id);
+    await db.prepare('DELETE FROM departments WHERE id = ?').run(dept.id);
 
     // Audit log
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO transactions (item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
       VALUES (?, ?, ?, 'ADJUSTMENT', 0, 0, 0, ?, 'System Configuration', ?)
     `).run(
@@ -1896,7 +1896,7 @@ app.delete('/api/departments/:name', authenticateToken, (req, res) => {
 });
 
 // Categories list helper for filters and dropdowns
-app.get('/api/categories', (req, res) => {
+app.get('/api/categories', async (req, res) => {
   const { department } = req.query;
   let query = 'SELECT DISTINCT category, department FROM items WHERE 1=1';
   const params = [];
@@ -1905,7 +1905,7 @@ app.get('/api/categories', (req, res) => {
     params.push(department);
   }
   query += ' ORDER BY department, category';
-  const categories = db.prepare(query).all(...params);
+  const categories = await db.prepare(query).all(...params);
   res.json(categories);
 });
 
@@ -1919,7 +1919,13 @@ if (fs.existsSync(clientDistPath)) {
   });
 }
 
-// Start Server
-app.listen(PORT, () => {
-  console.log(`Restaurant Stock Management Server running on port ${PORT}`);
-});
+// Start Server if run directly
+if (process.env.VERCEL) {
+  module.exports = app;
+} else if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Restaurant Stock Management Server running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
