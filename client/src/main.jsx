@@ -19,3 +19,15 @@ if (rootEl) {
 } else {
   console.error('Root element not found in DOM');
 }
+
+// Register PWA service worker in production environments
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker
+      .register('/sw.js')
+      .catch((err) => {
+        console.warn('PWA service worker registration failed:', err);
+      });
+  });
+}
+

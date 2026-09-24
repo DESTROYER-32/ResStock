@@ -1,0 +1,20 @@
+{
+  "name": "ResStock Pro - Restaurant Inventory",
+  "short_name": "ResStock",
+  "description": "Multi-Department Restaurant Inventory Management & Supply Chain Control",
+  "start_url": "/",
+  "id": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090d16",
+  "theme_color": "#0f172a",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "48x48 72x72 96x96 128x128 192x192 256x256 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
