@@ -14,7 +14,20 @@ const PORT = config.PORT;
 const JWT_SECRET = config.JWT_SECRET;
 
 // Middleware
-app.use(cors());
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim())
+  : null;
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || !allowedOrigins || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Origin not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
 app.use(express.json());
 
 // Ensure database initialization
@@ -70,6 +83,45 @@ function optionalAuth(req, res, next) {
   } else {
     next();
   }
+}
+
+// In-memory rate limiter for authentication endpoints
+const loginAttempts = new Map();
+
+function loginRateLimiter(req, res, next) {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000; // 15 minutes window
+  const maxAttempts = 20; // 20 attempts per 15 minutes
+
+  const record = loginAttempts.get(ip);
+  if (!record || now > record.resetTime) {
+    loginAttempts.set(ip, { count: 1, resetTime: now + windowMs });
+    return next();
+  }
+
+  if (record.count >= maxAttempts) {
+    const retryAfterSec = Math.ceil((record.resetTime - now) / 1000);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({
+      error: `Too many login attempts from this IP. Please try again in ${Math.ceil(retryAfterSec / 60)} minutes.`
+    });
+  }
+
+  record.count += 1;
+  next();
+}
+
+// Periodic cleanup of expired rate limit entries
+if (typeof setInterval !== 'undefined') {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, record] of loginAttempts.entries()) {
+      if (now > record.resetTime) {
+        loginAttempts.delete(ip);
+      }
+    }
+  }, 10 * 60 * 1000).unref?.();
 }
 
 // ==========================================
@@ -194,8 +246,8 @@ app.post('/api/system/seed-demo', authenticateToken, async (req, res) => {
   }
 });
 
-// Login
-app.post('/api/auth/login', async (req, res) => {
+// Login (protected by rate limiting)
+app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
@@ -221,6 +273,9 @@ app.post('/api/auth/login', async (req, res) => {
   };
 
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+
+  const clientIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+  loginAttempts.delete(clientIp);
 
   res.json({
     token,
@@ -270,25 +325,39 @@ app.get('/api/dashboard/stats', optionalAuth, async (req, res) => {
     { name: 'Housekeeping', icon: 'Sparkles', color: 'text-teal-400' },
     { name: 'Bar', icon: 'Wine', color: 'text-purple-400' }
   ];
-  const departments = await Promise.all(deptsToReport.map(async deptObj => {
+  // Single aggregated query to fetch all department stats at once (avoids N+1 HTTP round-trips)
+  const deptStatsRows = await db.prepare(`
+    SELECT
+      department,
+      COUNT(*) as total_items,
+      SUM(CASE WHEN current_stock = 0 THEN 1 ELSE 0 END) as out_of_stock,
+      SUM(CASE WHEN current_stock > 0 AND current_stock <= min_threshold THEN 1 ELSE 0 END) as low_stock,
+      SUM(CASE WHEN current_stock > min_threshold THEN 1 ELSE 0 END) as in_stock,
+      COALESCE(SUM(current_stock * cost_per_unit), 0) as total_valuation
+    FROM items
+    GROUP BY department
+  `).all();
+  const deptStatsMap = {};
+  for (const s of deptStatsRows) {
+    deptStatsMap[s.department] = s;
+  }
+
+  const departments = deptsToReport.map(deptObj => {
     const dept = deptObj.name;
-    const stats = await db.prepare(`
-      SELECT
-        COUNT(*) as total_items,
-        SUM(CASE WHEN current_stock = 0 THEN 1 ELSE 0 END) as out_of_stock,
-        SUM(CASE WHEN current_stock > 0 AND current_stock <= min_threshold THEN 1 ELSE 0 END) as low_stock,
-        SUM(CASE WHEN current_stock > min_threshold THEN 1 ELSE 0 END) as in_stock,
-        COALESCE(SUM(current_stock * cost_per_unit), 0) as total_valuation
-      FROM items
-      WHERE department = ?
-    `).get(dept);
+    const stats = deptStatsMap[dept] || {
+      total_items: 0,
+      out_of_stock: 0,
+      low_stock: 0,
+      in_stock: 0,
+      total_valuation: 0
+    };
     return {
       department: dept,
       icon: deptObj.icon,
       color: deptObj.color,
       ...stats
     };
-  }));
+  });
 
   // Recent transactions summary (today)
   const todayWhere = department && department !== 'All' ? 'AND department = ?' : '';
@@ -1017,11 +1086,24 @@ app.get('/api/orders', optionalAuth, async (req, res) => {
   const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
   const orders = await db.prepare(`SELECT * FROM orders ${whereClause} ORDER BY created_at DESC`).all(...params);
 
-  const getItemsStmt = db.prepare('SELECT * FROM order_items WHERE order_id = ?');
-  const result = await Promise.all(orders.map(async ord => ({
+  // Batch fetch all order items in a single query (avoids N+1 HTTP round-trips)
+  const orderIds = orders.map(o => o.id);
+  const itemsByOrderId = {};
+  if (orderIds.length > 0) {
+    const placeholders = orderIds.map(() => '?').join(',');
+    const allItems = await db.prepare(`SELECT * FROM order_items WHERE order_id IN (${placeholders})`).all(...orderIds);
+    for (const item of allItems) {
+      if (!itemsByOrderId[item.order_id]) {
+        itemsByOrderId[item.order_id] = [];
+      }
+      itemsByOrderId[item.order_id].push(item);
+    }
+  }
+
+  const result = orders.map(ord => ({
     ...ord,
-    items: await getItemsStmt.all(ord.id)
-  })));
+    items: itemsByOrderId[ord.id] || []
+  }));
 
   res.json(result);
 });
@@ -1742,24 +1824,36 @@ app.get('/api/departments', async (req, res) => {
   try {
     const depts = await db.prepare('SELECT id, name, icon, color, description, created_at FROM departments ORDER BY id ASC').all();
 
-    // Enrich with item counts and health statistics
-    const enriched = await Promise.all(depts.map(async d => {
-      const stats = await db.prepare(`
-        SELECT
-          COUNT(*) as total_items,
-          SUM(CASE WHEN current_stock = 0 THEN 1 ELSE 0 END) as out_of_stock,
-          SUM(CASE WHEN current_stock > 0 AND current_stock <= min_threshold THEN 1 ELSE 0 END) as low_stock,
-          SUM(CASE WHEN current_stock > min_threshold THEN 1 ELSE 0 END) as in_stock,
-          COALESCE(SUM(current_stock * cost_per_unit), 0) as total_valuation
-        FROM items
-        WHERE department = ?
-      `).get(d.name);
+    // Single aggregated query to fetch all department stats at once (avoids N+1 HTTP round-trips)
+    const deptStatsRows = await db.prepare(`
+      SELECT
+        department,
+        COUNT(*) as total_items,
+        SUM(CASE WHEN current_stock = 0 THEN 1 ELSE 0 END) as out_of_stock,
+        SUM(CASE WHEN current_stock > 0 AND current_stock <= min_threshold THEN 1 ELSE 0 END) as low_stock,
+        SUM(CASE WHEN current_stock > min_threshold THEN 1 ELSE 0 END) as in_stock,
+        COALESCE(SUM(current_stock * cost_per_unit), 0) as total_valuation
+      FROM items
+      GROUP BY department
+    `).all();
+    const statsMap = {};
+    for (const s of deptStatsRows) {
+      statsMap[s.department] = s;
+    }
 
+    const enriched = depts.map(d => {
+      const stats = statsMap[d.name] || {
+        total_items: 0,
+        out_of_stock: 0,
+        low_stock: 0,
+        in_stock: 0,
+        total_valuation: 0
+      };
       return {
         ...d,
         ...stats
       };
-    }));
+    });
 
     res.json(enriched);
   } catch (err) {
