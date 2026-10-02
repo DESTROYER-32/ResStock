@@ -20,6 +20,7 @@ import BulkEditModal from './components/BulkEditModal';
 import OrdersView from './components/OrdersView';
 import GenerateOrderModal from './components/GenerateOrderModal';
 import ReceiveOrderModal from './components/ReceiveOrderModal';
+import VendorBillScannerView from './components/VendorBillScannerView';
 import Toast from './components/Toast';
 
 export default function App() {
@@ -368,6 +369,7 @@ export default function App() {
               onOpenBulkEdit={(selectedItems) => setBulkEditModal({ isOpen: true, items: selectedItems })}
               onBulkDelete={(selectedItems) => setDeleteModal({ isOpen: true, item: null, items: selectedItems })}
               onOpenOrderItems={(itemsToOrder) => setGenerateOrderModal({ isOpen: true, items: itemsToOrder })}
+              onScanBill={() => setCurrentView('bill-scan')}
             />
           )}
 
@@ -379,6 +381,20 @@ export default function App() {
               onStockOut={handleStockOutSubmit}
               recentTransactions={transactions}
               loading={actionLoading}
+              onScanBill={() => setCurrentView('bill-scan')}
+            />
+          )}
+
+          {currentView === 'bill-scan' && (
+            <VendorBillScannerView
+              items={items}
+              departmentsList={departmentsList}
+              selectedDepartment={selectedDepartment}
+              onImportComplete={() => {
+                fetchData();
+              }}
+              showToast={showToast}
+              onNavigateToView={(view) => setCurrentView(view)}
             />
           )}
 

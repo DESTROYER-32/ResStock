@@ -39,3 +39,4 @@ Thumbs.db
 # Antigravity CLI / Temp
 .gemini/
 scratch/
+*.traineddata

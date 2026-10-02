@@ -19,7 +19,8 @@ import {
   ShoppingBag,
   Store,
   Layers,
-  Package
+  Package,
+  Receipt
 } from 'lucide-react';
 import { useCurrency, CurrencyIcon } from '../context/CurrencyContext';
 
@@ -186,6 +187,14 @@ export default function DashboardView({
           >
             <ArrowDownRight className="w-4 h-4" />
             <span>Receive Stock (Stock In)</span>
+          </button>
+
+          <button
+            onClick={() => setCurrentView('bill-scan')}
+            className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm shadow-md shadow-indigo-600/30 transition active:scale-98"
+          >
+            <Receipt className="w-4 h-4 text-indigo-200" />
+            <span>Scan Vendor Bill</span>
           </button>
 
           <button

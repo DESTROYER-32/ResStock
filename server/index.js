@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const config = require('./config');
 const { db, ensureDbInit, seedDemoData } = require('./db');
+const { parseVendorBill, matchExtractedItemsWithInventory } = require('./billParser');
 
 const app = express();
 const PORT = config.PORT;
@@ -2001,6 +2002,416 @@ app.get('/api/categories', async (req, res) => {
   query += ' ORDER BY department, category';
   const categories = await db.prepare(query).all(...params);
   res.json(categories);
+});
+
+// ==========================================
+// 8. VENDOR BILL INGESTION (EXCEL / CSV SPREADSHEETS)
+// ==========================================
+
+// Scan / parse vendor bill spreadsheet
+app.post('/api/bills/scan', authenticateToken, upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'Please upload an Excel spreadsheet (.xlsx, .xls) or CSV vendor bill.' });
+  }
+
+  try {
+    const inventoryItems = await db.prepare(
+      'SELECT id, name, sku, department, category, current_stock, unit, cost_per_unit, supplier FROM items'
+    ).all();
+
+    const scanResult = await parseVendorBill(
+      req.file.buffer,
+      req.file.originalname,
+      req.file.mimetype,
+      inventoryItems
+    );
+
+    res.json({
+      success: true,
+      ...scanResult
+    });
+  } catch (err) {
+    console.error('Error scanning vendor bill:', err);
+    res.status(500).json({ error: 'Failed to scan bill: ' + err.message });
+  }
+});
+
+// Download example vendor bill Excel template
+app.get('/api/bills/template', async (req, res) => {
+  const templatePath = path.join(__dirname, 'sample_vendor_bill.xlsx');
+  const publicPath = path.join(__dirname, '../client/public/sample_vendor_bill.xlsx');
+  const filePath = fs.existsSync(templatePath) ? templatePath : publicPath;
+  if (fs.existsSync(filePath)) {
+    return res.download(filePath, 'sample_vendor_bill.xlsx');
+  }
+  res.status(404).json({ error: 'Sample vendor bill template not found.' });
+});
+
+// Built-in sample vendor bills for instant testing
+app.get('/api/bills/samples', authenticateToken, async (req, res) => {
+  const { type } = req.query;
+
+  const sampleDefinitions = {
+    food: {
+      id: 'food',
+      label: 'Sysco Wholesale Food & Meats',
+      vendor: 'Sysco Wholesale Distribution',
+      invoiceNumber: 'SYS-89241',
+      invoiceDate: new Date().toISOString().split('T')[0],
+      department: 'Kitchen',
+      fileType: 'excel',
+      fileName: 'sysco_invoice_89241.xlsx',
+      rawItems: [
+        { raw_name: 'Choice Ribeye Steak (12oz)', quantity: 10, unit: 'pieces', unit_cost: 14.50 },
+        { raw_name: 'Atlantic Salmon Fillets', quantity: 8, unit: 'kg', unit_cost: 18.00 },
+        { raw_name: 'Extra Virgin Olive Oil 5L', quantity: 6, unit: 'bottles', unit_cost: 32.00 },
+        { raw_name: 'Fresh Mozzarella Ball', quantity: 15, unit: 'packs', unit_cost: 3.25 },
+        { raw_name: 'Organic Saffron Threads 10g', quantity: 5, unit: 'packs', unit_cost: 16.00 },
+        { raw_name: 'French Black Truffle Oil 250ml', quantity: 4, unit: 'bottles', unit_cost: 22.50 }
+      ]
+    },
+    bar: {
+      id: 'bar',
+      label: "Southern Glazer's Spirits & Beverages",
+      vendor: "Southern Glazer's Wine & Spirits",
+      invoiceNumber: 'SGWS-55190',
+      invoiceDate: new Date().toISOString().split('T')[0],
+      department: 'Bar',
+      fileType: 'excel',
+      fileName: 'southernglazers_bill_55190.xlsx',
+      rawItems: [
+        { raw_name: 'Jameson Irish Whiskey 750ml', quantity: 12, unit: 'bottles', unit_cost: 26.00 },
+        { raw_name: 'Grey Goose Vodka 1.0L', quantity: 6, unit: 'bottles', unit_cost: 36.50 },
+        { raw_name: 'Prosecco Superiore DOCG', quantity: 18, unit: 'bottles', unit_cost: 14.50 },
+        { raw_name: 'Craft Blood Orange Bitters', quantity: 8, unit: 'bottles', unit_cost: 13.50 }
+      ]
+    },
+    housekeeping: {
+      id: 'housekeeping',
+      label: 'Ecolab Sanitation & Housekeeping',
+      vendor: 'Ecolab Hygiene Solutions',
+      invoiceNumber: 'ECO-77218',
+      invoiceDate: new Date().toISOString().split('T')[0],
+      department: 'Housekeeping',
+      fileType: 'excel',
+      fileName: 'ecolab_delivery_77218.xlsx',
+      rawItems: [
+        { raw_name: 'Commercial Disinfectant (Gallon)', quantity: 8, unit: 'bottles', unit_cost: 16.50 },
+        { raw_name: 'Heavy Duty Bleach Clean 1Gal', quantity: 6, unit: 'bottles', unit_cost: 8.20 },
+        { raw_name: 'Microfiber Cleaning Cloths (Pack 12)', quantity: 25, unit: 'packs', unit_cost: 11.00 },
+        { raw_name: 'Lavender Multi-Surface Cleaner 1Gal', quantity: 4, unit: 'bottles', unit_cost: 14.00 }
+      ]
+    }
+  };
+
+  if (!type) {
+    return res.json({
+      samples: Object.values(sampleDefinitions).map(s => ({
+        id: s.id,
+        label: s.label,
+        vendor: s.vendor,
+        department: s.department,
+        itemCount: s.rawItems.length
+      }))
+    });
+  }
+
+  const selectedSample = sampleDefinitions[type] || sampleDefinitions.food;
+  const inventoryItems = await db.prepare(
+    'SELECT id, name, sku, department, category, current_stock, unit, cost_per_unit, supplier FROM items'
+  ).all();
+
+  const matchedItems = matchExtractedItemsWithInventory(
+    selectedSample.rawItems,
+    inventoryItems,
+    selectedSample.vendor
+  );
+
+  res.json({
+    success: true,
+    fileType: selectedSample.fileType,
+    fileName: selectedSample.fileName,
+    vendor: selectedSample.vendor,
+    invoiceNumber: selectedSample.invoiceNumber,
+    invoiceDate: selectedSample.invoiceDate,
+    department: selectedSample.department,
+    totalLines: matchedItems.length,
+    matchedCount: matchedItems.filter(i => i.match_status === 'HIGH_MATCH').length,
+    partialCount: matchedItems.filter(i => i.match_status === 'PARTIAL_MATCH').length,
+    newCount: matchedItems.filter(i => i.match_status === 'NO_MATCH').length,
+    items: matchedItems
+  });
+});
+
+// Confirm and commit vendor bill items to stock
+app.post('/api/bills/confirm-stock', authenticateToken, async (req, res) => {
+  const {
+    vendor_name,
+    invoice_number,
+    invoice_date,
+    department,
+    destination_or_source,
+    notes,
+    items,
+    create_order_record
+  } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'No items provided to add to stock.' });
+  }
+
+  const itemsToAdd = items.filter(i => i.include_in_import !== false);
+  if (itemsToAdd.length === 0) {
+    return res.status(400).json({ error: 'All items were deselected. Please select at least one item.' });
+  }
+
+  try {
+    const processBillTransaction = db.transaction(async () => {
+      let createdCount = 0;
+      let updatedCount = 0;
+      let totalUnitsAdded = 0;
+      let totalCostSum = 0;
+      const processedResults = [];
+      const orderLineItems = [];
+
+      const userName = req.user.name || req.user.username || 'System User';
+      const sourceLabel = destination_or_source?.trim() ||
+        `Vendor Delivery: ${vendor_name || 'Vendor'}${invoice_number ? ' (Inv #' + invoice_number + ')' : ''}`;
+
+      const insertItemStmt = db.prepare(`
+        INSERT INTO items (name, sku, department, category, current_stock, unit, min_threshold, cost_per_unit, supplier, location, notes)
+        VALUES (@name, @sku, @department, @category, @current_stock, @unit, @min_threshold, @cost_per_unit, @supplier, @location, @notes)
+      `);
+
+      const updateItemStockStmt = db.prepare(`
+        UPDATE items
+        SET current_stock = ?, cost_per_unit = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `);
+
+      const insertTxStmt = db.prepare(`
+        INSERT INTO transactions (item_id, item_name, sku, department, type, quantity, previous_stock, new_stock, user_name, destination_or_source, notes)
+        VALUES (?, ?, ?, ?, 'IN', ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const entry of itemsToAdd) {
+        const qtyToAdd = Math.max(0, parseFloat(entry.confirmed_quantity || entry.quantity_to_add || entry.scanned_quantity || 0));
+        const unitCost = Math.max(0, parseFloat(entry.confirmed_unit_cost || entry.unit_cost || entry.scanned_unit_cost || 0));
+
+        if (qtyToAdd <= 0) continue;
+
+        if (entry.is_new_item) {
+          // --- CREATE NEW ENTRY IN DATABASE ---
+          const newData = entry.new_item_data || {};
+          const itemName = (newData.name || entry.raw_name || 'New Item').trim();
+          let itemSku = (newData.sku || '').trim();
+          const itemDept = newData.department || department || 'Kitchen';
+          const itemCategory = newData.category || 'Vendor Inbound';
+          const itemUnit = newData.unit || entry.scanned_unit || 'pieces';
+          const itemMinThreshold = Math.max(0, parseFloat(newData.min_threshold) || 5);
+          const itemCost = unitCost > 0 ? unitCost : Math.max(0, parseFloat(newData.cost_per_unit) || 0);
+          const itemSupplier = vendor_name || newData.supplier || 'Vendor Delivery';
+
+          // Auto-generate SKU if blank or ensure uniqueness
+          if (!itemSku) {
+            const prefix = itemDept.substring(0, 3).toUpperCase();
+            itemSku = `${prefix}-BILL-${Math.floor(100000 + Math.random() * 900000)}`;
+          } else {
+            // Check if SKU exists
+            const existingWithSku = await db.prepare('SELECT id FROM items WHERE sku = ?').get(itemSku);
+            if (existingWithSku) {
+              itemSku = `${itemSku}-${Math.floor(1000 + Math.random() * 9000)}`;
+            }
+          }
+
+          // Register department if it doesn't exist
+          try {
+            await db.prepare('INSERT OR IGNORE INTO departments (name) VALUES (?)').run(itemDept);
+          } catch (_) {}
+
+          const info = await insertItemStmt.run({
+            name: itemName,
+            sku: itemSku,
+            department: itemDept,
+            category: itemCategory,
+            current_stock: qtyToAdd,
+            unit: itemUnit,
+            min_threshold: itemMinThreshold,
+            cost_per_unit: itemCost,
+            supplier: itemSupplier,
+            location: 'Receiving Staging',
+            notes: `Added from vendor bill ${invoice_number ? 'Inv #' + invoice_number : ''}`
+          });
+
+          const newItemId = info.lastInsertRowid;
+
+          // Record initial/inbound transaction
+          await insertTxStmt.run(
+            newItemId,
+            itemName,
+            itemSku,
+            itemDept,
+            qtyToAdd,
+            0,
+            qtyToAdd,
+            userName,
+            sourceLabel,
+            notes ? notes.trim() : `New item registered from vendor bill (Inv #${invoice_number || 'N/A'})`
+          );
+
+          createdCount++;
+          totalUnitsAdded += qtyToAdd;
+          totalCostSum += (qtyToAdd * itemCost);
+
+          processedResults.push({
+            action: 'CREATED_NEW',
+            id: newItemId,
+            name: itemName,
+            sku: itemSku,
+            added_quantity: qtyToAdd,
+            new_stock: qtyToAdd
+          });
+
+          orderLineItems.push({
+            item_id: newItemId,
+            item_name: itemName,
+            sku: itemSku,
+            department: itemDept,
+            quantity: qtyToAdd,
+            unit: itemUnit,
+            unit_cost: itemCost,
+            total_cost: qtyToAdd * itemCost
+          });
+        } else {
+          // --- MAP TO EXISTING ITEM IN DATABASE ---
+          const targetItemId = entry.selected_item_id || entry.matched_item?.id;
+          if (!targetItemId) {
+            throw new Error(`Item "${entry.raw_name}" is marked as existing but no item was selected.`);
+          }
+
+          const existingItem = await db.prepare('SELECT * FROM items WHERE id = ?').get(targetItemId);
+          if (!existingItem) {
+            throw new Error(`Mapped stock item (ID ${targetItemId}) could not be found in database.`);
+          }
+
+          const prevStock = existingItem.current_stock;
+          const newStock = prevStock + qtyToAdd;
+          const newCost = (entry.update_stock_cost && unitCost > 0) ? unitCost : existingItem.cost_per_unit;
+
+          await updateItemStockStmt.run(newStock, newCost, targetItemId);
+
+          await insertTxStmt.run(
+            existingItem.id,
+            existingItem.name,
+            existingItem.sku,
+            existingItem.department,
+            qtyToAdd,
+            prevStock,
+            newStock,
+            userName,
+            sourceLabel,
+            notes ? notes.trim() : `Received from bill (Inv #${invoice_number || 'N/A'})`
+          );
+
+          updatedCount++;
+          totalUnitsAdded += qtyToAdd;
+          totalCostSum += (qtyToAdd * (unitCost > 0 ? unitCost : existingItem.cost_per_unit));
+
+          processedResults.push({
+            action: 'STOCK_ADDED',
+            id: existingItem.id,
+            name: existingItem.name,
+            sku: existingItem.sku,
+            added_quantity: qtyToAdd,
+            previous_stock: prevStock,
+            new_stock: newStock
+          });
+
+          orderLineItems.push({
+            item_id: existingItem.id,
+            item_name: existingItem.name,
+            sku: existingItem.sku,
+            department: existingItem.department,
+            quantity: qtyToAdd,
+            unit: existingItem.unit,
+            unit_cost: unitCost > 0 ? unitCost : existingItem.cost_per_unit,
+            total_cost: qtyToAdd * (unitCost > 0 ? unitCost : existingItem.cost_per_unit)
+          });
+        }
+      }
+
+      // Automatically register a received purchase order audit trail
+      let createdOrderNumber = null;
+      if (create_order_record !== false && orderLineItems.length > 0) {
+        const orderSupplier = vendor_name || 'Vendor Delivery';
+        const orderDept = department && department !== 'All' ? department : (orderLineItems[0]?.department || 'Kitchen');
+        createdOrderNumber = invoice_number ? `INV-${invoice_number}` : `BILL-PO-${Math.floor(100000 + Math.random() * 900000)}`;
+
+        // Check if order number exists to prevent duplicate key constraint
+        const existingOrder = await db.prepare('SELECT id FROM orders WHERE order_number = ?').get(createdOrderNumber);
+        if (existingOrder) {
+          createdOrderNumber = `${createdOrderNumber}-${Math.floor(100 + Math.random() * 900)}`;
+        }
+
+        const insertOrderStmt = db.prepare(`
+          INSERT INTO orders (order_number, supplier, department, status, total_items, total_cost, notes, created_by, received_at)
+          VALUES (?, ?, ?, 'RECEIVED', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `);
+
+        const orderInfo = await insertOrderStmt.run(
+          createdOrderNumber,
+          orderSupplier,
+          orderDept,
+          orderLineItems.length,
+          totalCostSum,
+          `Inbound delivery from vendor bill. ${notes || ''}`.trim(),
+          userName
+        );
+
+        const orderId = orderInfo.lastInsertRowid;
+
+        const insertOrderItemStmt = db.prepare(`
+          INSERT INTO order_items (order_id, item_id, item_name, sku, ordered_quantity, received_quantity, unit, unit_cost, total_cost)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const line of orderLineItems) {
+          await insertOrderItemStmt.run(
+            orderId,
+            line.item_id,
+            line.item_name,
+            line.sku,
+            line.quantity,
+            line.quantity,
+            line.unit,
+            line.unit_cost,
+            line.total_cost
+          );
+        }
+      }
+
+      return {
+        createdCount,
+        updatedCount,
+        totalItemsProcessed: createdCount + updatedCount,
+        totalUnitsAdded,
+        totalCostSum,
+        orderNumber: createdOrderNumber,
+        items: processedResults
+      };
+    });
+
+    const result = await processBillTransaction();
+
+    res.json({
+      success: true,
+      message: `Successfully processed vendor bill: ${result.totalUnitsAdded} units added across ${result.totalItemsProcessed} item(s) (${result.createdCount} new, ${result.updatedCount} restocked).`,
+      ...result
+    });
+  } catch (err) {
+    console.error('Error confirming vendor bill stock:', err);
+    res.status(500).json({ error: 'Failed to update stock from bill: ' + err.message });
+  }
 });
 
 // Fallback for SPA routing in production

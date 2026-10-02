@@ -19,7 +19,8 @@ import {
   MapPin,
   Truck,
   Edit3,
-  ShoppingBag
+  ShoppingBag,
+  Receipt
 } from 'lucide-react';
 import { useCurrency } from '../context/CurrencyContext';
 
@@ -38,6 +39,7 @@ export default function InventoryTableView({
   onOpenBulkEdit,
   onBulkDelete,
   onOpenOrderItems,
+  onScanBill,
   departmentsList = []
 }) {
   const { currency, formatAmount } = useCurrency();
@@ -223,6 +225,17 @@ export default function InventoryTableView({
               <ShoppingBag className="w-3.5 h-3.5 text-indigo-600" />
               <span>Order Stock {selectedIds.size > 0 ? `(${selectedIds.size})` : ''}</span>
             </button>
+
+            {onScanBill && (
+              <button
+                onClick={onScanBill}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 transition"
+                title="Scan photo, PDF or Excel vendor bill to restock"
+              >
+                <Receipt className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Scan Bill</span>
+              </button>
+            )}
 
             <button
               onClick={onOpenExcelModal}

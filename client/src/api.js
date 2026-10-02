@@ -432,6 +432,52 @@ export const api = {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to delete order');
     return data;
+  },
+
+  // Vendor Bill Ingestion & Stock Add
+  async scanVendorBill(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const token = safeStorage.getItem('res_stock_token');
+    const headers = {
+      'ngrok-skip-browser-warning': 'true'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch(`${BASE_URL}/bills/scan`, {
+      method: 'POST',
+      headers,
+      body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to scan bill');
+    return data;
+  },
+
+  async getBillSamples(type = '') {
+    const query = type ? `?type=${encodeURIComponent(type)}` : '';
+    const res = await fetch(`${BASE_URL}/bills/samples${query}`, {
+      headers: { ...getAuthHeader() }
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load bill samples');
+    return data;
+  },
+
+  async confirmBillStock(payload) {
+    const res = await fetch(`${BASE_URL}/bills/confirm-stock`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeader()
+      },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to confirm and add stock from bill');
+    return data;
   }
 };
 

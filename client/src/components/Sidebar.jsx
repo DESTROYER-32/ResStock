@@ -19,7 +19,8 @@ import {
   Beer,
   Coffee,
   Pizza,
-  Package
+  Package,
+  Receipt
 } from 'lucide-react';
 import { useCurrency } from '../context/CurrencyContext';
 
@@ -72,6 +73,7 @@ export default function Sidebar({
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'inventory', label: 'Inventory Items', icon: Boxes },
     { id: 'stock-flow', label: 'Stock In / Out', icon: ArrowLeftRight, highlight: true },
+    { id: 'bill-scan', label: 'Scan Vendor Bills', icon: Receipt, highlight: true },
     {
       id: 'alerts',
       label: 'Alerts & Reorders',
